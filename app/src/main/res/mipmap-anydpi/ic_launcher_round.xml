@@ -1,0 +1,12 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!--
+  RootFlow 圆角图标（**无版本限定符**）—— 阶段 9
+
+  与 `mipmap-anydpi/ic_launcher.xml` 同源（同一份 `layer-list`）。
+  旧系统没有"圆形遮罩"概念，`android:roundIcon` 在它们那里会被忽略；
+  保持同源是为了让"两个入口指向同一张图"成为结构上的事实。
+-->
+<layer-list xmlns:android="http://schemas.android.com/apk/res/android">
+    <item android:drawable="@color/rootflow_launcher_background" />
+    <item android:drawable="@mipmap/ic_launcher_foreground" />
+</layer-list>

@@ -1,0 +1,138 @@
+# RootFlow 版本目录
+#
+# 版本选择受两条硬约束支配，均已用实测数据核验（阶段 0 变更报告有完整依据）：
+#   1. compileSdk = 35 —— 所有 AAR 的 minCompileSdk 必须 ≤ 35；
+#      因此 Compose BOM 上限 2025.09.00、activity-compose 上限 1.10.1、
+#      core-ktx 上限 1.16.0、navigation-compose 上限 2.9.8、haze 上限 1.7.2。
+#   2. Kotlin 2.2.20 —— KSP 版本必须与之精确配对，即 2.2.20-2.0.4
+#      （KSP 2.3.x 起改为新编号，仅适用于 Kotlin 2.3+）。
+
+[versions]
+# 构建工具链
+agp = "8.13.0"
+kotlin = "2.2.20"
+ksp = "2.2.20-2.0.4"
+ktlintPlugin = "14.2.0"
+
+# AndroidX 基础
+coreKtx = "1.16.0"
+lifecycle = "2.9.4"
+activityCompose = "1.10.1"
+
+# Compose（BOM 统一管理 compose 组件版本）
+composeBom = "2025.09.00"
+
+# 导航（AGENTS.md：navigation-compose + PredictiveBackHandler）
+# 上限 2.8.9：2.9.x 会拉入 androidx.activity 1.12.x，进而强制引入
+# androidx.navigationevent 1.0.1（其 minCompileSdk=36），与 compileSdk 35 冲突。
+navigationCompose = "2.8.9"
+
+# AndroidX activity（显式固定，避免被传递依赖抬到 1.12.x —— 见上条同类原因）
+androidxActivity = "1.10.1"
+
+# DI / 持久化
+# Hilt 上限为 2.58，两层原因（均已实测/字节码核验）：
+#   1. 2.59.1 起插件声明要求 AGP 9.0.0，apply 阶段直接抛错；
+#   2. 即便 2.59（声明仅需 AGP 8.4.0）也引用了 AGP 9 才有的
+#      ScopedArtifact$POST_COMPILATION_CLASSES，在 AGP 8.13.0 下报 NoClassDefFound。
+hilt = "2.58"
+room = "2.8.5"
+
+# DataStore 1.1.7 (NOT 1.2.1) - stage 6 dependency reality, verified against the
+# offline cache BEFORE any code was written (AGENT_PROTOCOL.md section 1.1):
+#   caches\...\androidx.datastore\datastore-preferences\              -> only 1.1.7
+#   caches\...\androidx.datastore\datastore-preferences-android\1.1.7\*.aar -> present
+#   androidx.datastore:datastore:1.2.1 is an AGGREGATE module whose POM depends on
+#   datastore-preferences:1.2.1, and THAT artifact is absent from the cache.
+# The whole datastore group is pinned to 1.1.7 with `strictly` in [libraries] so
+# Gradle cannot resolve the group to the unreachable 1.2.1.
+# Consequence: the 1.2.1 PreferenceDataStoreFactory overload that takes a
+# CoroutineScope does not exist in 1.1.7 - do not use it.
+# The version is written inline in [libraries] (no [versions] entry) because the
+# `strictly` constraint needs a literal, and an unused [versions] key is dead weight.
+
+# Material icons, core set only.
+# Why not material-icons-extended: its AAR is 34884 KB (whole icon set, no debug
+# trimming) while material-icons-core is 804 KB and already covers every icon
+# this app uses. Also NOT pulled in transitively by material3 1.4.0 anymore,
+# so it must be declared explicitly.
+materialIconsCore = "1.7.8"
+
+# Root 通道（AGENTS.md：libsu 5.x 为唯一允许的 Root 通道）
+libsu = "5.2.2"
+
+# 毛玻璃（AGENTS.md：Haze）
+# 上限 1.6.10：1.7.2 会传递引入 JetBrains Compose Multiplatform 1.10.0，
+# 进而把 androidx.activity 强制抬到 1.12.2（minCompileSdk=36），与 compileSdk 35 冲突。
+haze = "1.6.10"
+
+# 单元测试
+junitJupiter = "5.14.4"
+junitPlatform = "1.14.4"
+turbine = "1.2.1"
+mockk = "1.14.11"
+robolectric = "4.17"
+coroutinesTest = "1.11.0"
+
+[libraries]
+# --- AndroidX 基础 ---
+androidx-core-ktx = { group = "androidx.core", name = "core-ktx", version.ref = "coreKtx" }
+androidx-lifecycle-runtime-ktx = { group = "androidx.lifecycle", name = "lifecycle-runtime-ktx", version.ref = "lifecycle" }
+# Stage 6 (Compose UI). Same lifecycle version as above (2.9.4), both cached.
+#   lifecycle-runtime-compose -> collectAsStateWithLifecycle
+#   lifecycle-viewmodel-compose -> hiltViewModel() in @Composable
+androidx-lifecycle-runtime-compose = { group = "androidx.lifecycle", name = "lifecycle-runtime-compose", version.ref = "lifecycle" }
+androidx-lifecycle-viewmodel-compose = { group = "androidx.lifecycle", name = "lifecycle-viewmodel-compose", version.ref = "lifecycle" }
+androidx-activity = { group = "androidx.activity", name = "activity", version.ref = "androidxActivity" }
+androidx-activity-compose = { group = "androidx.activity", name = "activity-compose", version.ref = "activityCompose" }
+
+# --- Compose（版本由 BOM 决定）---
+androidx-compose-bom = { group = "androidx.compose", name = "compose-bom", version.ref = "composeBom" }
+androidx-ui = { group = "androidx.compose.ui", name = "ui" }
+androidx-ui-graphics = { group = "androidx.compose.ui", name = "ui-graphics" }
+androidx-ui-tooling = { group = "androidx.compose.ui", name = "ui-tooling" }
+androidx-ui-tooling-preview = { group = "androidx.compose.ui", name = "ui-tooling-preview" }
+androidx-material3 = { group = "androidx.compose.material3", name = "material3" }
+androidx-material-icons-core = { group = "androidx.compose.material", name = "material-icons-core", version.ref = "materialIconsCore" }
+
+# --- 导航 ---
+androidx-navigation-compose = { group = "androidx.navigation", name = "navigation-compose", version.ref = "navigationCompose" }
+
+# --- DI ---
+hilt-android = { group = "com.google.dagger", name = "hilt-android", version.ref = "hilt" }
+hilt-compiler = { group = "com.google.dagger", name = "hilt-android-compiler", version.ref = "hilt" }
+
+# --- 持久化 ---
+androidx-room-runtime = { group = "androidx.room", name = "room-runtime", version.ref = "room" }
+androidx-room-ktx = { group = "androidx.room", name = "room-ktx", version.ref = "room" }
+androidx-room-compiler = { group = "androidx.room", name = "room-compiler", version.ref = "room" }
+# `strictly` pins the WHOLE androidx.datastore group to 1.1.7 (1.2.1 is not in the
+# offline cache - see the [versions] comment). Without it, Gradle would upgrade the
+# group back to 1.2.1 via the datastore-core requirement of any other consumer and
+# fail to resolve datastore-preferences:1.2.1 offline.
+androidx-datastore = { group = "androidx.datastore", name = "datastore", version = { strictly = "1.1.7" } }
+androidx-datastore-preferences = { group = "androidx.datastore", name = "datastore-preferences", version = { strictly = "1.1.7" } }
+
+# --- Root 通道（JitPack）---
+libsu-core = { group = "com.github.topjohnwu.libsu", name = "core", version.ref = "libsu" }
+libsu-service = { group = "com.github.topjohnwu.libsu", name = "service", version.ref = "libsu" }
+
+# --- 毛玻璃 ---
+haze = { group = "dev.chrisbanes.haze", name = "haze", version.ref = "haze" }
+haze-materials = { group = "dev.chrisbanes.haze", name = "haze-materials", version.ref = "haze" }
+
+# --- 单元测试 ---
+junit-jupiter = { group = "org.junit.jupiter", name = "junit-jupiter", version.ref = "junitJupiter" }
+junit-platform-launcher = { group = "org.junit.platform", name = "junit-platform-launcher", version.ref = "junitPlatform" }
+turbine = { group = "app.cash.turbine", name = "turbine", version.ref = "turbine" }
+mockk = { group = "io.mockk", name = "mockk", version.ref = "mockk" }
+robolectric = { group = "org.robolectric", name = "robolectric", version.ref = "robolectric" }
+kotlinx-coroutines-test = { group = "org.jetbrains.kotlinx", name = "kotlinx-coroutines-test", version.ref = "coroutinesTest" }
+
+[plugins]
+android-application = { id = "com.android.application", version.ref = "agp" }
+kotlin-android = { id = "org.jetbrains.kotlin.android", version.ref = "kotlin" }
+kotlin-compose = { id = "org.jetbrains.kotlin.plugin.compose", version.ref = "kotlin" }
+ksp = { id = "com.google.devtools.ksp", version.ref = "ksp" }
+hilt = { id = "com.google.dagger.hilt.android", version.ref = "hilt" }
+ktlint = { id = "org.jlleitschuh.gradle.ktlint", version.ref = "ktlintPlugin" }

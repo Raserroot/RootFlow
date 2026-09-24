@@ -1,0 +1,149 @@
+<?xml version="1.0" encoding="utf-8"?>
+<manifest xmlns:android="http://schemas.android.com/apk/res/android"
+    xmlns:tools="http://schemas.android.com/tools">
+
+    <!-- 权限登记（阶段 3c.1 一次性补完 5 项 → 阶段 5 按需求 §7 追加 3 项，见 PROJECT_STATE.md 决策 10）。
+         与 domain/event/PermissionStatusProvider.kt 的 AndroidPermission 目录**必须严格一致**
+         （由 AndroidPermissionCatalogTest 断言，防止目录与清单漂移）。
+
+         - RECEIVE_BOOT_COMPLETED  -> 需求 §2.1 boot（阶段 3b 已加）
+         - ACCESS_NETWORK_STATE    -> 需求 §2.1 wifi_changed（阶段 3c.1）
+         - PACKAGE_USAGE_STATS     -> 需求 §2.1 app_foreground（阶段 3c.2 使用；3c.1 只登记与上报状态）
+         - SCHEDULE_EXACT_ALARM    -> 需求 §2.1 time（阶段 3c.2 使用；D3 决定 v1 走非精确，
+                                      声明只为让 PermissionStatusProvider 如实上报"未授予"）
+         - POST_NOTIFICATIONS      -> 需求 §7 前台服务通知（阶段 5 起真正使用）
+         - FOREGROUND_SERVICE / FOREGROUND_SERVICE_SPECIAL_USE -> 需求 §7 前台服务（阶段 5）
+         - REQUEST_IGNORE_BATTERY_OPTIMIZATIONS                -> 需求 §7 电池白名单引导（阶段 5） -->
+    <uses-permission android:name="android.permission.RECEIVE_BOOT_COMPLETED" />
+    <uses-permission android:name="android.permission.ACCESS_NETWORK_STATE" />
+    <!-- 特殊权限：无运行时弹窗，只能由用户在"使用情况访问"设置页授予。
+         tools:ignore 是因为 lint 对 PACKAGE_USAGE_STATS 报 ProtectedPermissions；
+         本应用确实是该权限的合法使用方（需求 §2.1 明确要求 app_foreground）。 -->
+    <uses-permission
+        android:name="android.permission.PACKAGE_USAGE_STATS"
+        tools:ignore="ProtectedPermissions" />
+    <!-- targetSdk 34 下系统默认不授予精确闹钟；D3 决定 v1 不调用 setExactAndAllowWhileIdle，
+         故本权限只用于状态上报（阶段 3c.2 的 time 若启精确模式才需要它）。 -->
+    <uses-permission android:name="android.permission.SCHEDULE_EXACT_ALARM" />
+    <uses-permission android:name="android.permission.POST_NOTIFICATIONS" />
+    <!-- 阶段 5：前台服务。两条都是 normal 权限（安装即授予），无运行时弹窗。
+         FOREGROUND_SERVICE_SPECIAL_USE 是 foregroundServiceType="specialUse" 的硬要求：
+         平台原文（platforms/android-35/data/res/values/attrs_manifest.xml）写明
+         <flag name="specialUse" value="0x40000000" /> 需要该权限，缺了它
+         startForeground(..., specialUse) 在 API 34+ 上会抛 SecurityException。 -->
+    <uses-permission android:name="android.permission.FOREGROUND_SERVICE" />
+    <uses-permission android:name="android.permission.FOREGROUND_SERVICE_SPECIAL_USE" />
+    <!-- 阶段 5：电池白名单引导的前置。声明它**不是**为了直接调
+         ACTION_REQUEST_IGNORE_BATTERY_OPTIMIZATIONS（已批准的裁定 ③：只跳设置列表页），
+         而是为了能经 PowerManager.isIgnoringBatteryOptimizations 如实上报"当前有没有被放行"。
+         不声明则无从上报，阶段 6 的 UI 也就无法给出正确的引导。 -->
+    <uses-permission android:name="android.permission.REQUEST_IGNORE_BATTERY_OPTIMIZATIONS" />
+
+    <application
+        android:name=".RootFlowApp"
+        android:allowBackup="false"
+        android:enableOnBackInvokedCallback="true"
+        android:label="@string/app_name"
+        android:supportsRtl="true"
+        android:theme="@style/Theme.RootFlow">
+
+        <!-- ★ 阶段 7：`windowSoftInputMode="adjustResize"` 是**显式**声明（此前依赖系统默认）。
+             理由（真机实测）：`MainActivity` 调了 `enableEdgeToEdge()` ⇒ 窗口铺满全屏；
+             若窗口不"随 IME 收缩"，键盘就只能是**盖**在内容上的一层，
+             而输入框恰好落在被盖住的区域时，用户看到的就是"点了没法输入、下面也滑不动"。
+             声明 adjustResize 后窗口会为 IME 让出空间，配合 Compose 侧的
+             `Modifier.imePadding()`（见 `RootFlowMain` 的内容层）才能把焦点输入框顶到可见区。
+             两者**缺一不可**：只写清单不写 imePadding，Compose 内容不会跟着让位。 -->
+        <!-- ★ 阶段 9：应用图标（自主设计，见 res/drawable/ic_launcher_foreground.xml 的设计理念）。
+             两个属性都显式声明，**不要删任何一个**：
+             - `icon`       ：所有场景的默认图标；API 26+ 解析到 `mipmap-anydpi-v26/`（adaptive 分层）
+             - `roundIcon`  ：系统/app 请求"圆形图标"时的入口（部分启动器与系统 UI 会读它）
+             解析链：`mipmap-anydpi-v26` > `mipmap-anydpi` > `drawable/ic_launcher_legacy`，
+             四份资源（含 `ic_launcher_round` 两份）**缺一个就会在对应路径上没图标**。 -->
+        <activity
+            android:name=".MainActivity"
+            android:exported="true"
+            android:icon="@mipmap/ic_launcher"
+            android:roundIcon="@mipmap/ic_launcher_round"
+            android:windowSoftInputMode="adjustResize">
+            <intent-filter>
+                <action android:name="android.intent.action.MAIN" />
+                <category android:name="android.intent.category.LAUNCHER" />
+            </intent-filter>
+        </activity>
+
+        <!-- 阶段 3b：boot 事件源。只监听 BOOT_COMPLETED（不监听 LOCKED_BOOT_COMPLETED，
+             因此不声明 directBootAware —— 见 3a 的决策：Room 在 CE 存储上，锁屏前不可用）。
+             exported=false：开机广播是系统广播，无需对外导出（Android 12+ 强制显式声明）。 -->
+        <receiver
+            android:name=".service.receiver.BootEventReceiver"
+            android:enabled="true"
+            android:exported="false">
+            <intent-filter>
+                <action android:name="android.intent.action.BOOT_COMPLETED" />
+            </intent-filter>
+        </receiver>
+
+        <!-- 阶段 3c.1：电源插拔（需求 §2.1 power_connected / power_disconnected）。
+             清单注册：这两条 action 不在 Android 8.0 的隐式广播禁令内。 -->
+        <receiver
+            android:name=".service.receiver.PowerEventReceiver"
+            android:enabled="true"
+            android:exported="false">
+            <intent-filter>
+                <action android:name="android.intent.action.ACTION_POWER_CONNECTED" />
+                <action android:name="android.intent.action.ACTION_POWER_DISCONNECTED" />
+            </intent-filter>
+        </receiver>
+
+        <!-- 阶段 3c.1：电量（需求 §2.1 battery_low + 决策 3 的 battery_okay）。
+             battery_okay 是需求未列但必须建的恢复边：缺了它"低电量"状态无法复位。 -->
+        <receiver
+            android:name=".service.receiver.BatteryEventReceiver"
+            android:enabled="true"
+            android:exported="false">
+            <intent-filter>
+                <action android:name="android.intent.action.BATTERY_LOW" />
+                <action android:name="android.intent.action.BATTERY_OKAY" />
+            </intent-filter>
+        </receiver>
+
+        <!-- 阶段 3c.2：闹钟触发（需求 §2.1 time / interval）。
+             两个 action 由 AlarmActions 常量与本文件共同约定（清单无法引用 Kotlin 常量，
+             故一致性由 AlarmFireReceiverTest 的"清单包含这两个 action"断言守护）。
+             PendingIntent 由 AndroidAlarmHandle 以显式 component 构造。 -->
+        <receiver
+            android:name=".service.receiver.AlarmFireReceiver"
+            android:enabled="true"
+            android:exported="false">
+            <intent-filter>
+                <action android:name="com.rootflow.TIME" />
+                <action android:name="com.rootflow.INTERVAL" />
+            </intent-filter>
+        </receiver>
+
+        <!-- 阶段 3c.1 的 screen_on / screen_off / unlock 与 wifi_changed **不得**在此声明：
+             前者被 Android 8.0 的隐式广播禁令挡住（只能动态注册，见 ScreenEventSource 的类文档），
+             后者走 ConnectivityManager.NetworkCallback（本就不是广播）。 -->
+
+        <!-- 阶段 5：前台服务（需求 §7）。
+             foregroundServiceType="specialUse" 是 Android 14（API 34）的硬要求：
+             自该版本起，前台服务**必须**声明类型，否则 startForeground 抛
+             MissingForegroundServiceTypeException。
+             选 specialUse 是因为本应用的用途（Root 脚本宿主的事件监听与保活）不属于任何
+             预定义类型（dataSync/mediaPlayback/location/… 都不贴切），
+             平台对此类的原文定义即"无法归入其它前台服务类型、也不能用 JobInfo API 的场景"。
+
+             exported="false"：服务只由本应用自己的 MainActivity 与通知 action 拉起。
+             stopWithTask="false"：从最近任务划掉 App 时**保留**服务
+             （START_STICKY 的补充；ColorOS 是否遵守须真机验证，见 STAGE5-DEVICE-VERIFICATION.md）。 -->
+        <service
+            android:name=".service.KeepAliveService"
+            android:enabled="true"
+            android:exported="false"
+            android:foregroundServiceType="specialUse"
+            android:stopWithTask="false" />
+
+    </application>
+
+</manifest>

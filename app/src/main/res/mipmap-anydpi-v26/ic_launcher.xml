@@ -1,0 +1,29 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!--
+  RootFlow 自适应图标（API 26+）—— 阶段 9
+
+  结构：
+  - background：`@color/rootflow_launcher_background`（品牌青，纯色，画满整层）
+  - foreground：`@mipmap/ic_launcher_foreground`（五档密度的 PNG，图形去背后只有白色笔画）
+
+  ## 为什么 foreground 是 PNG 而不是 vector
+  图形是**用户提供的手写连笔标志**。尝试过三条矢量化路线（手工贝塞尔拟合、
+  按行提取中心线后串联、参数化圆环建模），在无矢量化工具（potrace 类）的环境下
+  都无法忠实还原笔画连接，产出与原始标志明显不同。
+  用户 2026-09-20 裁定：**直接用他提供的 PNG**（该图本身 192×192、透明底、
+  纯色圆盘、图形近白），并豁免本阶段"不用外部图片"那句约束。
+  ⇒ 源图 192px 覆盖 108dp ⇒ 在 xxxhdpi(4x) 上等于 1:1，任何启动器尺寸都不会糊。
+
+  ## 为什么图形层做了去背
+  源图是"青圆盘 + 白笔画"。若整张当作 foreground，圆盘边缘会与 background
+  叠加出**两道可见的边缘**。因此生成 foreground 时按亮度阈值（205）抠出白笔画、
+  其余全透明，圆盘由 background 提供。合成结果与原图一致（见 verify 对比图）。
+
+  ## 为什么没有 <monochrome>（Android 13+ 主题化图标）
+  主题化要求前景是单色剪影并由系统按壁纸取色。加它会让"用户开启主题化图标"时
+  品牌青丢失。当前选择是**保留品牌色**、不参与主题化（与 Magisk / LSPosed 一致）。
+-->
+<adaptive-icon xmlns:android="http://schemas.android.com/apk/res/android">
+    <background android:drawable="@color/rootflow_launcher_background" />
+    <foreground android:drawable="@mipmap/ic_launcher_foreground" />
+</adaptive-icon>

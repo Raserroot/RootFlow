@@ -1,0 +1,140 @@
+package com.rootflow.ui.theme
+
+import androidx.compose.material3.Typography
+import androidx.compose.ui.text.TextStyle
+import androidx.compose.ui.text.font.FontFamily
+import androidx.compose.ui.text.font.FontWeight
+import androidx.compose.ui.unit.sp
+
+/**
+ * 字体体系（需求 §6，MD3）。
+ *
+ * ## ★★ 阶段 8.1：整体放大（用户反馈"字体偏小、要眯眼"）
+ *
+ * ### 为什么必须改成**显式字号**，而不是继续用 `Typography()` 默认值
+ * MD3 的默认档位对本项目的版式整体偏小（正文 14sp、标签 11–12sp），
+ * 这是"密集设置页"的默认，不是"卡片流 + 深色终端"的默认。
+ * 更要紧的是：**默认值不可见**。用 `Typography()` 时"这个标题多大"这个问题
+ * 在代码里没有任何答案，只能靠查 MD3 基线表 —— 于是"放大一点"这种需求
+ * 每次都要重新推导一遍。改成显式常量后，字号与它的**依据**写在同一个地方。
+ *
+ * ### 量出来的旧值 → 新值（旧值 = MD3 基线，已逐项核对）
+ * | 用途 | token | 旧 | 新 |
+ * |---|---|---|---|
+ * | 顶部大标题 | `headlineMedium` | 28 | **32** |
+ * | 状态卡主标题 | `headlineSmall` | 24 | **26** |
+ * | 状态卡副标题 | `bodyLarge` | 16 | **18** |
+ * | 卡片标题 / 信息卡 label | `titleMedium` | 16 | **18** |
+ * | 信息卡 value / 安全卡第三行 | `bodyMedium` | 14 | **16** |
+ * | 终端每行 / 辅助说明 | `bodySmall` | 12 | **14** |
+ * | 终端/终端摘要标签 | `labelMedium` | 12 | **13** |
+ * | 底栏文字 / chip 标签 | `labelSmall` | 11 | **13** |
+ *
+ * ### 为什么 `bodyLarge` 与 `titleMedium` 都是 18
+ * 两者在本项目的分工是"副标题"与"卡片内主标签"，视觉上本就同级
+ * （都在卡片里、都不是标题）。给它们同一个字号是**有意的**：
+ * 差 1sp 只会让对照看起来像没对齐。
+ *
+ * ### ⚠️ 影响面（如实登记）
+ * 这四个 token（`bodyLarge` / `bodyMedium` / `bodySmall` / `labelSmall`）**是全应用共用**的，
+ * 因此配置页 / 设置页 / 编辑器的文字**也会一起变大**。
+ * 这是用户 2026-09-20 的明确要求（"不要只放大标题——信息行、终端、底栏全都放大"），
+ * 但**那三个页面的版式未随本次改动复核**（本阶段的范围仍是主页 + 底栏）——
+ * 若某处出现换行/裁切，改的是那一处，**不要**为了个别页面把全局字号调回去。
+ *
+ * ### 等宽字体在哪
+ * 终端直接用 `FontFamily.Monospace`（见 [TerminalTextStyle]），**不在此处定义**：
+ * 终端是唯一需要等宽的地方，把它做成全局 token 会诱导别处也去用。
+ */
+internal val RootFlowTypography =
+    Typography(
+        headlineMedium =
+            TextStyle(
+                fontSize = 32.sp,
+                lineHeight = 40.sp,
+                fontWeight = FontWeight.Normal,
+                letterSpacing = 0.sp,
+            ),
+        headlineSmall =
+            TextStyle(
+                fontSize = 26.sp,
+                lineHeight = 34.sp,
+                fontWeight = FontWeight.Normal,
+                letterSpacing = 0.sp,
+            ),
+        titleMedium =
+            TextStyle(
+                fontSize = 18.sp,
+                lineHeight = 26.sp,
+                fontWeight = FontWeight.Medium,
+                letterSpacing = 0.15.sp,
+            ),
+        titleSmall =
+            TextStyle(
+                fontSize = 16.sp,
+                lineHeight = 24.sp,
+                fontWeight = FontWeight.Medium,
+                letterSpacing = 0.1.sp,
+            ),
+        bodyLarge =
+            TextStyle(
+                fontSize = 18.sp,
+                lineHeight = 26.sp,
+                fontWeight = FontWeight.Normal,
+                letterSpacing = 0.5.sp,
+            ),
+        bodyMedium =
+            TextStyle(
+                fontSize = 16.sp,
+                lineHeight = 24.sp,
+                fontWeight = FontWeight.Normal,
+                letterSpacing = 0.25.sp,
+            ),
+        bodySmall =
+            TextStyle(
+                fontSize = 14.sp,
+                lineHeight = 20.sp,
+                fontWeight = FontWeight.Normal,
+                letterSpacing = 0.4.sp,
+            ),
+        labelMedium =
+            TextStyle(
+                fontSize = 13.sp,
+                lineHeight = 18.sp,
+                fontWeight = FontWeight.Medium,
+                letterSpacing = 0.5.sp,
+            ),
+        labelSmall =
+            TextStyle(
+                fontSize = 13.sp,
+                lineHeight = 18.sp,
+                fontWeight = FontWeight.Medium,
+                letterSpacing = 0.5.sp,
+            ),
+    )
+
+/**
+ * 深色终端每一行的字号（阶段 8.1：12sp → **13sp**）。
+ *
+ * ## 为什么单独一个常量、不直接 `bodySmall`
+ * 终端是**等宽 + 高密度**的行列表：13sp 已经是"能看清且一屏还能放下 15 行左右"的上限。
+ * 把它与 `bodySmall`（14sp，用于辅助说明）分开，将来单独调终端时
+ * 不会连带把说明文字也改掉。
+ */
+internal val TerminalFontSize = 13.sp
+
+/** 终端行的行高（比字号松一点，长行折行时才不会糊在一起）。 */
+internal val TerminalLineHeight = 19.sp
+
+/**
+ * 终端行的完整样式（等宽 + 固定字号）。
+ *
+ * ## 为什么 `fontFamily` 在这里给
+ * 见 [RootFlowTypography] 的"等宽字体在哪"：终端是唯一需要等宽的地方。
+ */
+internal val TerminalTextStyle =
+    TextStyle(
+        fontFamily = FontFamily.Monospace,
+        fontSize = TerminalFontSize,
+        lineHeight = TerminalLineHeight,
+    )

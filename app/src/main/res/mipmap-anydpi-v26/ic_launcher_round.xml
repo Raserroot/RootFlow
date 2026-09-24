@@ -1,0 +1,12 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!--
+  RootFlow 圆角图标（API 26+）—— 阶段 9
+
+  与 `ic_launcher.xml` **内容相同**：自适应图标的形状由**系统遮罩**决定，
+  应用侧无法也不应自己裁圆角（自己裁会在方形遮罩的设备上露出四角底色）。
+  `android:roundIcon` 只是给需要"圆形图标资源"的启动器一个入口。
+-->
+<adaptive-icon xmlns:android="http://schemas.android.com/apk/res/android">
+    <background android:drawable="@color/rootflow_launcher_background" />
+    <foreground android:drawable="@mipmap/ic_launcher_foreground" />
+</adaptive-icon>

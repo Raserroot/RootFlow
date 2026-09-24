@@ -1,0 +1,11 @@
+<?xml version="1.0" encoding="utf-8"?>
+<resources>
+    <!-- 窗口底色的**深色**值（F4）。
+
+         值取自 Compose 深色主题的 `background`（`ui/theme/Color.kt` 的 `RootFlowDarkBackground`）。
+         由 Android 在系统处于深色时自动选用（`values-night` 限定符），**不需要**在任何代码里
+         调 `AppCompatDelegate.setDefaultNightMode` —— 本项目的主题切换是 Compose 侧的事
+         （`RootFlowTheme(themeMode = …)`），XML 只管窗口底色这一帧。
+    -->
+    <color name="rootflow_window_background">#0E1515</color>
+</resources>

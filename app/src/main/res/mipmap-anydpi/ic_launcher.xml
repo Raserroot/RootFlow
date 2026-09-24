@@ -1,0 +1,18 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!--
+  RootFlow 图标（**无版本限定符**，API < 26 与部分第三方图标读取路径）—— 阶段 9
+
+  ## 为什么是 `layer-list` 而不是 `<inset>` 包 vector
+  前景已经换成 PNG（见 `mipmap-anydpi-v26/ic_launcher.xml` 的说明：手写标志
+  无法在无矢量化工具的环境里忠实还原）。旧系统不认 adaptive icon 的**分层**语义，
+  必须给一张**已合成**的完整图 ⇒ 用 `layer-list` 把"品牌青底色 + 白色图形"叠起来，
+  效果等于合成图，且不需要再存一份"整图"PNG。
+
+  ## 与 v26 版的关系
+  Android 按"最具体的限定符"取胜：API 26+ 选中 `mipmap-anydpi-v26/`（分层，系统遮罩），
+  其余落回本文件（已合成）。两者**必须同时存在**。
+-->
+<layer-list xmlns:android="http://schemas.android.com/apk/res/android">
+    <item android:drawable="@color/rootflow_launcher_background" />
+    <item android:drawable="@mipmap/ic_launcher_foreground" />
+</layer-list>

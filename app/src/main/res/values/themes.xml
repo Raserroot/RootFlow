@@ -1,0 +1,35 @@
+<?xml version="1.0" encoding="utf-8"?>
+<resources>
+    <!--
+      宿主主题（阶段 6a 起为 Compose 服务）。
+
+      界面**完全**由 Compose 绘制（`MainActivity.setContent { RootFlowApp() }`），
+      本主题只负责"Compose 第一帧到来之前"的那一瞬间，因此刻意保持极简：
+      一个无 ActionBar 的宿主 + 一个与 Compose 浅色主题一致的窗口底色。
+
+      ## ★ 为什么必须有 windowBackground（真机暴露，F4）
+      `MainActivity` 调了 `enableEdgeToEdge()` ⇒ 系统栏透明 ⇒ **没有被 App 绘制的区域
+      会露出窗口底色**。原先这里用的是 `android:Theme.Material.NoActionBar`（平台**深色**
+      主题，windowBackground 是纯黑），于是真机上出现"底部一条黑带 +
+      导航栏区域一块黑色圆角色块"。
+
+      Compose 侧的根治在 `RootFlowMain` 的根 Box（F1）；本文件是**第二道保险**：
+      它覆盖 Compose 尚未绘制、以及进程启动早期的那段窗口。
+
+      ## 两处颜色必须与 Compose 主题一致
+      - 本文件（默认 / 浅色）：`RootFlowBackground` = `#FAFDFC`
+      - `values-night/themes.xml`（深色）：`RootFlowDarkBackground` = `#0E1515`
+      但**用户可在 App 内强制浅/深**（`ThemeMode`，阶段 6d 提供开关），
+      此时窗口底色与 Compose 主题会短暂不一致 —— 这是可接受的：
+      底色只在一帧内可见，而"黑带"是持续可见的。
+
+      ## 为什么用 Theme.Material.Light 作为父主题
+      平台浅色主题的 windowBackground 默认为浅色，与我需要的方向一致；
+      用深色 `Theme.Material` 作父主题会让"忘了写 windowBackground"时又退回纯黑，
+      属于把已知的坑留在原地。图标明暗由 `enableEdgeToEdge()` 按实际主题自动处理，
+      因此不在此处设置 windowLightStatusBar。
+    -->
+    <style name="Theme.RootFlow" parent="android:Theme.Material.Light.NoActionBar">
+        <item name="android:windowBackground">@color/rootflow_window_background</item>
+    </style>
+</resources>

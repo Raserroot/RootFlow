@@ -1,0 +1,33 @@
+<?xml version="1.0" encoding="utf-8"?>
+<resources>
+    <!-- 窗口底色的**浅色**值（F4）。
+
+         值取自 Compose 浅色主题的 `background`（`ui/theme/Color.kt` 的 `RootFlowBackground`）。
+         它与 `values-night` 里的深色值必须成对维护：这一对的唯一作用是
+         "在 Compose 画出第一帧之前，窗口不要是黑的或错的颜色"。
+
+         注意：动态取色（API 31+）下 Compose 的实际底色会随壁纸变化，
+         而这里只能是静态值 —— 差异最多一帧，可接受（见 themes.xml 的说明）。 -->
+    <color name="rootflow_window_background">#FAFDFC</color>
+
+    <!-- ================= 应用图标（阶段 9） =================
+         **背景 = 品牌青 `#00C4F1`**（取自用户提供的手写标志原图的圆盘色）。
+         图形是白色笔画（`mipmap-*/ic_launcher_foreground.png`，已去背）。
+
+         ## 为什么写死色值，而不是引用主题属性
+         1. **启动器图标不跟随 App 主题**：它由桌面进程渲染，读不到 App 的 Compose 主题，
+            也读不到 App 内的 `ThemeMode`（用户可强制浅/深）。`?attr/colorPrimary`
+            只会拿到**系统**主题的值。
+         2. **`values-night` 不给它第二套值**：图标在两种系统主题下都应是同一个品牌色。
+            因此这里是**唯一**定义；`values-night/colors.xml` 不要再写一遍。
+
+         ## 与 App 内主色的关系（**刻意不同，勿"统一"**）
+         App 内的 `colorScheme.primary` 是深青 `#00696D`（见 `ui/theme/Color.kt`），
+         而图标是亮青 `#00C4F1` —— 后者来自用户给的标志原图，**是品牌标识的一部分**。
+         两者不一致是**有意的**：图标要在深色/浅色桌面上都跳得出来，而 App 内的主色
+         要保证正文对比度。若将来要统一，应先确认用户是否接受改标志色。
+
+         对比度：`#00C4F1` 对白约 2.2:1，低于 WCAG AA 的正文要求；但图标不是正文
+         —— 它是**大色块 + 粗笔画**，缩到 48dp 仍清晰可辨（真机截图已验证）。 -->
+    <color name="rootflow_launcher_background">#00C4F1</color>
+</resources>

@@ -1,0 +1,76 @@
+# Gradle
+.gradle/
+build/
+!gradle/wrapper/gradle-wrapper.jar
+
+# 鏈湴閰嶇疆锛堝惈 SDK 璺緞锛屼笉搴旀彁浜わ級
+local.properties
+
+# Android Studio / IntelliJ
+.idea/
+*.iml
+*.hprof
+captures/
+.externalNativeBuild/
+.cxx/
+
+# NDK / 鍘熺敓浜х墿
+obj/
+*.so
+
+# 鏋勫缓杈撳嚭
+out/
+release/
+*.apk
+*.aab
+*.ap_
+*.dex
+*.class
+
+# 绛惧悕鏉愭枡锛堜弗绂佹彁浜わ級
+*.jks
+*.keystore
+keystore.properties
+
+# 鏃ュ織涓庝复鏃舵枃浠?.build-logs/
+*.log
+*.tmp
+.DS_Store
+Thumbs.db
+
+# 闃舵 3/4/5 鐨勭湡鏈洪獙璇佷骇鐗╋紙run-batch*.cmd 鐨勮緭鍑猴細logcat dump 涓庡垽璇荤粨鏋滐級
+*.logcat
+rf-5-logs/
+rf-5-batch2-output.txt
+
+# Kotlin
+.kotlin/
+
+# 鏈粨搴撶殑闃舵 0 涓存椂鎺㈡祴鑴氭湰浜х墿锛堝凡鍒犻櫎鑴氭湰鏈綋锛屼繚鐣欏拷鐣ヤ互闃插鍙戯級
+.probe-*.json
+.probe-*.mjs
+
+# 闃舵 1c 涓存椂鐪熸満瀹為獙鑴氭湰锛堜笉璺熻釜锛屼粎鐢ㄤ簬鐢ㄦ埛鎵嬪姩 push 鍒拌澶囨墽琛岋級
+1c_exp.sh
+1c_exp2.sh
+path_probe.sh
+
+# 闃舵 6e锛氱湡鏈?UI 鑷姩鍖栦骇鐢熺殑 uiautomator dump 涓庢矙绠辨瀯寤鸿緭鍑猴紙涓€娆′竴浜э紝鏃犲鐢ㄤ环鍊硷級
+#   娉ㄦ剰 `rfdb-6e.py` / `rfui-6e.py` / `rfedit-6e.py` **瑕佽窡韪?*锛堝彲澶嶇敤宸ュ叿锛岃
+#   `STAGE6E-DEVICE-VERIFICATION.md` 闄勫綍 D锛夛紝鍥犳涓嶈兘鏁寸被蹇界暐 `rf-*`銆?rf-6e-build*.txt
+rf-6e-format.txt
+rf-6e-batch*-db.txt
+rf-6e-*.xml
+rf-6e-db/
+rf-6e-db2/
+d[0-9]*.xml
+[abcdefghijklmnopqrstuvwxyz][0-9]*.xml
+
+# 鐪熸満鎴浘锛堥樁娈?6e 璧风殑瑙勫垯锛?#   榛樿**涓嶅叆搴?*锛氫綋绉ぇ锛堟瘡寮?~1MB锛夈€佹椂鏁堟€у己 鈥斺€?UI 涓€鏀癸紝鍏ュ簱鐨勫浘灏变笌鐜扮姸涓嶇锛?#   鑰?鍥句笌鐜扮姸涓嶇"姣?娌℃湁鍥?鏇磋瀵硷紙6e 灏卞垹鎺変簡 7 寮犲凡琚悗缁慨澶嶆帹缈荤殑 6a 鎴浘锛夈€?#   闇€瑕佺暀妗ｇ殑鏀捐繘 docs/screenshots/ 骞?*鏄惧紡** `git add -f`锛堜笅闈㈢殑 `!` 渚嬪鍙槸
+#   璁?鐪熻鍏ュ簱"鏃朵笉蹇呮敼瑙勫垯锛夈€?/[0-9]*[a-z]-*.png
+!docs/screenshots/*.png
+
+# 整树排除真机截图（2026-09-24：曾误提交 33 张，含应用抽屉截图 ⇒ 泄露设备上所有 App）
+#   除应用图标外，任何 *.png 都不该入库。
+*.png
+!app/src/main/res/**/*.png

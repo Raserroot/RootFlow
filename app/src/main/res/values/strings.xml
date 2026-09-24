@@ -1,0 +1,16 @@
+<?xml version="1.0" encoding="utf-8"?>
+<resources>
+    <string name="app_name">RootFlow</string>
+
+    <!-- 阶段 5：前台服务通知渠道（需求 §7）。
+         资源文件按 XML 声明以 UTF-8 解析，**不受** AGENT_PROTOCOL.md §5.4 的
+         "面向 Windows 的文件必须纯 ASCII"约束（该约束只管 *.cmd/*.bat/gradle 配置），
+         故此处保留中文，与 app_name 一致。 -->
+    <string name="notification_channel_service">RootFlow 运行状态</string>
+    <string name="notification_channel_service_desc">常驻通知：显示事件监听与服务存活状态</string>
+    <string name="notification_channel_safe_mode">RootFlow 安全模式告警</string>
+    <string name="notification_channel_safe_mode_desc">熔断发生时的高优先级提醒</string>
+
+    <!-- 常驻通知上的「停止」动作（阶段 5：常驻通知没有退出手段是产品级缺陷） -->
+    <string name="notification_action_stop">停止服务</string>
+</resources>
