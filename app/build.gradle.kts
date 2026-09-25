@@ -54,13 +54,15 @@ android {
         applicationId = "com.rootflow.app"
         minSdk = 26
         targetSdk = 34
-        // ★ 阶段 11b 发布时更新（此前是 1.2.0 / code 4 —— 那一版指示器是静态圆，
-        //   用户实测「还是不行」，故重做为膨胀 + 拉伸 + 跟手高光的液态指示器）。
+        // ★ 阶段 11b 修复版（此前是 1.3.0 / code 5）。1.3.0 发出去后用户报
+        //   「拖动时底栏变成死白」—— 根因是高光 shader 返回了非 premultiplied 颜色
+        //   （`float4(1,1,1,0.1)` 里 RGB > A），渲染器把它当成不透明的白画了出来。
+        //   已在模拟器上复现并验证修复（见 `PROJECT_STATE.md`「阶段 11b 收尾记录」）。
         //   versionName 会经 BuildConfig 显示在主页「App 版本」与设置页「关于」，
         //   因此改这里就等于改了真机上看到的版本号 —— 发布时**必须**与 tag 一致。
         //   ⚠️ 本版本**未经真机验证**（`STAGE11-PLAN.md §5`）⇒ tag 只能带 `-unverified`。
-        versionCode = 5
-        versionName = "1.3.0"
+        versionCode = 6
+        versionName = "1.3.1"
 
         testInstrumentationRunner = "androidx.test.runner.AndroidJUnitRunner"
     }
