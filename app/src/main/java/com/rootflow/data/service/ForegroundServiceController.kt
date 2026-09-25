@@ -292,11 +292,35 @@ class ForegroundServiceController
                 .onFailure { Log.w(TAG, "SAFEMODE_NOTIFY_TRIP failed: ${it.message ?: it::class.java.name}") }
         }
 
-        /** 恢复（需求 §5.3 第 1 条）：撤销告警；常驻通知由订阅在下次发射时回到运行中态。 */
+        /**
+         * 恢复（需求 §5.3 第 1 条）：撤销告警，并**把常驻监管重新拉起来**。
+         *
+         * ## ★ 11e 补丁5：为什么必须重启 [daemonSupervisor]
+         * 这里此前是一处**对称性缺失**：`onSafeModeAlert` 里有 `daemonSupervisor.stop()`，
+         * 而恢复路径**只有** `notifier.cancelAlert()`。真机实测到的后果是：
+         * 熔断 → 退出安全模式后，总开关显示「已打开」、脚本显示「已启用」、
+         * 前台服务也显示「服务运行中」，**但那个常驻脚本就是不跑**，而且一行错误都没有。
+         *
+         * 原因：`stop()` 停的**不是脚本进程本身，而是监管循环** —— 脚本进程被杀只是顺带结果，
+         * 真正被拆掉的是"会把它再拉起来"的那个机制。只补"杀脚本"而不补"重建监管"，
+         * 退出安全模式后脚本就永远回不来（要重启 App 才恢复，因为启动流程会调 `start()`）。
+         *
+         * ## 为什么可以无条件调
+         * [DaemonSupervisor.start] **幂等**：已启动时只打一行
+         * `DAEMON_SUPERVISOR_START skipped reason=already started` 就返回。
+         * 因此这里不需要判 `registered`，与 `onSafeModeAlert` 里的 `stop()` 同款。
+         * 它内部会 `givenUp.clear()` —— 这正是"退出安全模式 = 这些脚本再试一次"该有的语义。
+         *
+         * 常驻通知由订阅在下次发射时回到运行中态。
+         */
         override fun onSafeModeRestore() {
             Log.i(TAG, "SAFEMODE_NOTIFY_RESTORE via=foreground-service-controller")
             runCatching { notifier.cancelAlert() }
                 .onFailure { Log.w(TAG, "SAFEMODE_NOTIFY_RESTORE failed: ${it.message ?: it::class.java.name}") }
+            // ★ 11e 补丁5：与 `onSafeModeAlert` 的 `stop()` 对称。少了这一行，
+            //   "退出安全模式"就只撤了通知、没恢复任何运行能力。
+            runCatching { daemonSupervisor.start() }
+                .onFailure { Log.w(TAG, "SAFEMODE_DAEMON_START_FAILED: ${describe(it)}") }
         }
 
         // ------------------------------------------------------ 内部

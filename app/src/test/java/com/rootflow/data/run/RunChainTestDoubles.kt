@@ -21,12 +21,16 @@ import com.rootflow.runtime.RunHandle
 import com.rootflow.runtime.ScriptEntity
 import com.rootflow.runtime.ScriptRuntime
 import com.rootflow.runtime.createRunHandle
+import kotlinx.coroutines.CoroutineScope
+import kotlinx.coroutines.Job
 import kotlinx.coroutines.awaitCancellation
 import kotlinx.coroutines.flow.Flow
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.asStateFlow
 import kotlinx.coroutines.flow.flow
+import kotlinx.coroutines.launch
+import java.util.UUID
 import com.rootflow.runtime.LogStream as RuntimeLogStream
 
 // 3d 的测试替身集合（纯 JVM，无 Android 依赖）。
@@ -65,16 +69,27 @@ internal class FakeScriptRepository(
 }
 
 /**
- * 记录型日志管道假件（只保留 `startRun` 的入参并同步收集 source）。
+ * 记录型日志管道假件（记录 `startRun` 的入参，并在返回的作业里收集 source）。
  *
  * ## 为什么必须记录 `batchSink` 与 `runMeta`
  * 3d 方案 §8 的**候选 A** 全部价值就在"运行元与日志源在同一次调用里交给管道"。
  * 若不用例断言这一步，落库侧的 `scriptId` 来源就成了"看起来接上了"。
  *
- * 本假件**同步收集** source（生产实现是后台收集），因此用例可以用
- * `advanceUntilIdle()` 精确控制"脚本已跑完"这一时刻。
+ * ## ★ 11e 补丁4：本假件从"同步收集"改成"后台收集 + 交出作业"
+ * 改前它在 `startRun` 里 `source.collect { }` **同步收完**，于是
+ * `ScriptRunCoordinator` 那层 `scope.launch { startRun(...) }` 拿到的 job 恰好等于
+ * "整次运行" —— **测试因此完全看不见生产上的真缺陷**：在生产里 `startRun` 是立即返回的，
+ * 那个包装 job 秒级完成，于是收尾钩子（注销 / 释放闸门 / 关通道 / 取消看门狗 / 记存活时长）
+ * 全部提前触发，常驻脚本被误判成"活了 0 毫秒、连崩 5 次"。
+ *
+ * 现在它与生产**同形**：立即返回一个承载收集的作业。用例仍可用
+ * `advanceUntilIdle()` 推进到"脚本已跑完"。
+ *
+ * @param scope 收集 source 的作用域；生产实现自带应用级作用域，本假件由用例传入
  */
-internal class RecordingLogPipeline : LogPipeline {
+internal class RecordingLogPipeline(
+    private val scope: CoroutineScope,
+) : LogPipeline {
     /** 一次 `startRun` 的入参快照。 */
     data class StartCall(
         val runId: String,
@@ -92,10 +107,10 @@ internal class RecordingLogPipeline : LogPipeline {
         source: Flow<LogEntry>,
         runMeta: RunMeta?,
         batchSink: LogBatchSink?,
-    ) {
+    ): Job {
         starts += StartCall(runId = runId, runMeta = runMeta, batchSink = batchSink)
         val sink = collected.getOrPut(runId) { mutableListOf() }
-        source.collect { entry -> sink += entry }
+        return scope.launch { source.collect { entry -> sink += entry } }
     }
 
     override fun observe(runId: String): Flow<LogBatch> = flow { }
@@ -123,26 +138,34 @@ internal class FakeScriptRuntime(
     /** 每次 `run` 的入参（断言映射与环境变量注入）。 */
     val runs = mutableListOf<Pair<ScriptEntity, RunContext>>()
 
+    /** 每次 `run` 收到的 `runId`（11e 补丁4：断言它与 `RunHandle.id` 是同一个值）。 */
+    val runIds = mutableListOf<String>()
+
     override suspend fun run(
         script: ScriptEntity,
         ctx: RunContext,
-    ): RunHandle = recordRun(script, ctx)
+        runId: String,
+    ): RunHandle = recordRun(script, ctx, runId)
 
     /**
      * 记录入参并产出一个句柄（不经过 `run`）。
      *
-     * 存在的理由：`ShellScriptRuntime` 是**具体类**且本阶段不改 runtime 公开接口，
-     * 因此单测经 MockK 打桩 `ShellScriptRuntime.run`，再调本方法拿到句柄并记录入参。
+     * 存在的理由：`ShellScriptRuntime` 是**具体类**，单测经 MockK 打桩
+     * `ShellScriptRuntime.run`，再调本方法拿到句柄并记录入参。
+     *
+     * @param runId **原样**成为 `RunHandle.id`（与 `ScriptRuntime.run` 的生产契约一致）
      */
     fun recordRun(
         script: ScriptEntity,
         ctx: RunContext,
+        runId: String = UUID.randomUUID().toString(),
     ): RunHandle {
         runs += script to ctx
+        runIds += runId
         val current = outcome
         // 注意 `createRunHandle` 的 lambda 是 `suspend RunHandle.(FlowCollector<LogLine>) -> Unit`：
         // **接收者是 RunHandle，收集器是形参**，因此必须显式接收形参再 `emit`。
-        return createRunHandle { collector ->
+        return createRunHandle(id = runId) { collector ->
             when (current) {
                 is RuntimeOutcome.Completed -> current.lines.forEach { line -> collector.emit(line) }
                 // 第一行之后永久挂起：使"这次运行仍在进行中"成为可观测状态

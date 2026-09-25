@@ -54,23 +54,23 @@ android {
         applicationId = "com.rootflow.app"
         minSdk = 26
         targetSdk = 34
-        // ★ 阶段 11e（此前 1.4.0 / code 8）。用户第六~十条反馈的落地：
-        //   ① 「液态玻璃还是没用」→ 用户直接裁定**移除液态玻璃**，底栏只留毛玻璃（Haze）。
-        //      整条链路（AGSL 折射 / 离屏捕获 / 三档降级 / 设置页开关）撤出生产；
-        //      实现与理由留在 GlassLayer / LiquidGlassRenderer / GlassParams / GlassTier /
-        //      NavBarGlow 的文件头（「已评估、不参与生产」）。
-        //   ② 「底栏字体调小一点」→ 新增 NavBarLabelFontSize = 11.sp（1.4.1）。
-        //   ③ 「字要往上调，符号下面一点就行」→ ICON_FRAME_SIZE 44 → 24dp +
-        //      新增 NavBarLabelLineHeight = 14.sp（1.4.2）。
-        //   ④ 「服务卡跟总开关调换位置」→ HomeScreen 的两个 item 交换，服务卡提到最顶（1.4.3）。
-        //   ⑤ 「服务卡完全照 LSPosed 复刻」→ ServiceStatusCard 重写为两行 + 右侧大图标
-        //      右下角溢出被裁 + 强调色 5% 叠 surface，参数逐像素取自参照截图（1.4.3）。
-        //   ⑥ 1.4.0 的 NavBarPalette（选中蓝/未选中灰）与玻璃参数（blur 8dp / scrim 0.10）**未动**。
+        // ★ 阶段 11e（此前 1.4.3 / code 11）。用户第九~十二条反馈 + 真机验证发现：
+        //   ① 「服务卡跟总开关调换位置」→ HomeScreen 的两个 item 交换，服务卡提到最顶。
+        //   ② 「服务卡完全照 LSPosed 复刻」→ ServiceStatusCard 重写为两行 + 右侧大图标
+        //      右下角溢出被裁 + 强调色 5% 叠 surface，参数逐像素取自参照截图。
+        //   ③ ★ 真机 bug（用户报的）：「常驻脚本被误判「活了 0 毫秒、连崩 5 次」」——
+        //      两处修复：`LogPipeline.startRun` 交出内部收集作业（`RunSession.job` 直接用它，
+        //      不再包那层会秒级完成的 `scope.launch`）；`ScriptRuntime.run` 增 `runId` 形参
+        //      （`handle.id` 与日志 / `.rf_pgid_*` / FIFO 名统一成一个值）。
+        //   ④ ★ 真机 bug（③ 的验证过程中发现）：「熔断后退出安全模式，常驻脚本不回来」——
+        //      `onSafeModeRestore` 补 `daemonSupervisor.start()`（与 alert 的 `stop()` 配对）。
+        //   ⑤ 「toast 被导航栏遮住」→ 三个页面的 `snackbarHost` 让出 `NavBarReservedSpace`。
         //   versionName 会经 BuildConfig 显示在主页「App 版本」与设置页「关于」，
         //   因此改这里就等于改了真机上看到的版本号 —— 发布时**必须**与 tag 一致。
-        //   ⚠️ 本版本**未经真机验证**（`STAGE11-PLAN.md §5`）⇒ tag 只能带 `-unverified`。
-        versionCode = 11
-        versionName = "1.4.3"
+        //   ⚠️ ③ ④ **已在真机（OnePlus PLK110 / Android 16）实测通过**；
+        //      ① ② ⑤ 只过了模拟器验证 ⇒ tag 仍带 `-unverified`。
+        versionCode = 12
+        versionName = "1.4.4"
 
         testInstrumentationRunner = "androidx.test.runner.AndroidJUnitRunner"
     }

@@ -1,11 +1,14 @@
 package com.rootflow.data.service
 
+import android.util.Log
 import com.rootflow.domain.event.TripReason
 import com.rootflow.domain.service.ForegroundState
 import com.rootflow.domain.service.KeepAliveHealthCheck
 import com.rootflow.domain.service.ServiceChannels
 import com.rootflow.domain.service.ServiceNotificationText
 import dagger.Lazy
+import io.mockk.every
+import io.mockk.mockkStatic
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.ExperimentalCoroutinesApi
 import kotlinx.coroutines.cancel
@@ -39,6 +42,17 @@ import org.junit.jupiter.api.Test
  */
 @OptIn(ExperimentalCoroutinesApi::class)
 class ForegroundServiceControllerTest {
+    init {
+        // ★ 11e 补丁5：本类（经由 `ForegroundServiceController`）会调 `Log.i` / `Log.w`，
+        //   但此前**没有**自己打桩 —— 它靠**别的测试类** `mockkStatic(Log)` 留下的静态桩
+        //   才能跑过，于是结果取决于测试执行顺序：单独跑这个类必炸
+        //   （`Method i in android.util.Log not mocked`），全量跑时又可能因顺序不同而红或绿。
+        //   补上打桩后与另外 22 个类行为一致，也不再依赖执行顺序。
+        mockkStatic(Log::class)
+        every { Log.i(any(), any()) } returns 0
+        every { Log.w(any(), any<String>()) } returns 0
+    }
+
     private val testDispatcher: TestDispatcher = StandardTestDispatcher()
     private val controllerScope = CoroutineScope(testDispatcher)
 
@@ -46,13 +60,15 @@ class ForegroundServiceControllerTest {
     private val breaker = FakeControllerCircuitBreaker()
     private val notifier = FakeServiceNotifier()
 
+    private val daemonSupervisor = RecordingDaemonSupervisor()
+
     private val controller =
         ForegroundServiceController(
             eventSourceRegistry = registry,
             // `Lazy` 是 Dagger 的断环手段（见控制器类 KDoc）；单测里直接给一个即时求值的 Lazy
             circuitBreaker = Lazy { breaker },
             notifier = notifier,
-            daemonSupervisor = RecordingDaemonSupervisor(),
+            daemonSupervisor = daemonSupervisor,
             scope = controllerScope,
         )
 
@@ -215,6 +231,35 @@ class ForegroundServiceControllerTest {
         controller.onSafeModeRestore()
 
         assertEquals(1, notifier.cancelAlertCalls)
+    }
+
+    /**
+     * ★ **11e 补丁5：熔断停掉的常驻监管，恢复时必须被拉回来。**
+     *
+     * ## 它防的是什么（真机实测的真缺陷）
+     * `onSafeModeAlert` 里有 `daemonSupervisor.stop()`，而恢复路径**只有**
+     * `notifier.cancelAlert()` —— 停有关、启没有。后果：
+     * 熔断 → 退出安全模式后，总开关显示「已打开」、脚本显示「已启用」、
+     * 前台服务也显示「服务运行中」，**但那个常驻脚本就是不跑**，且一行错误都没有
+     * （真机日志：等 40 秒零条 `DAEMON_*`，脚本进程数 0；重启 App 才恢复）。
+     *
+     * 根因是 `stop()` 停的**不是脚本进程本身，而是监管循环** ——
+     * 脚本被杀只是顺带结果，真正被拆掉的是"会把它再拉起来"的机制。
+     *
+     * ## 为什么原来的用例没抓住
+     * 既有的 `restore cancels the alert` **只断言 `cancelAlertCalls`**，
+     * 从不看监管器的启停次数；而夹具里那个 `RecordingDaemonSupervisor` 是**内联新建**的，
+     * 连字段都没有 ⇒ 这条"配对"性质完全没有护栏。
+     */
+    @Test
+    fun `★ restore restarts the daemon supervisor, paired with the alert stop`() {
+        controller.onSafeModeAlert(TripReason.Manual)
+        assertEquals(1, daemonSupervisor.stopCalls, "熔断必须停掉常驻监管")
+        assertFalse(daemonSupervisor.running, "停了之后不该还在监管")
+
+        controller.onSafeModeRestore()
+        assertEquals(1, daemonSupervisor.startCalls, "★ 恢复必须重启常驻监管（与 stop 配对）")
+        assertTrue(daemonSupervisor.running, "★ 恢复后必须真的在监管，否则常驻脚本永远不会跑")
     }
 
     @Test

@@ -118,8 +118,12 @@ class ShellScriptRuntime
         override suspend fun run(
             script: ScriptEntity,
             ctx: RunContext,
+            runId: String,
         ): RunHandle =
-            createRunHandle { collector ->
+            // ★ 11e 补丁4：`id` 必须**原样**用调用方的 runId。此前留空走默认的随机 UUID，
+            //   于是 `.rf_pgid_<handle.id>` / `.rf_err_<handle.id>` 与日志里的 runId
+            //   是两个值 —— `terminateRun(runId)` 永远找不到文件，"杀进程"是空操作。
+            createRunHandle(id = runId) { collector ->
                 emitScript(handle = this, collector = collector, script = script, ctx = ctx)
             }
 

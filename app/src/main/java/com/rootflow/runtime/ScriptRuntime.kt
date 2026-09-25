@@ -18,13 +18,25 @@ interface ScriptRuntime {
     /**
      * 创建一次运行的句柄。
      *
+     * ## ★ 为什么必须传入 `runId`（11e 补丁4 修的真缺陷）
+     * `RunHandle.id` 与"这次运行对外暴露的 runId"**必须是同一个值** —— 否则
+     * `ProcessGroupManager` 按 runId 去读 `.rf_pgid_<runId>` 时永远找不到文件
+     * （文件实际叫 `.rf_pgid_<handle.id>`），于是超时终止与熔断的"杀进程"
+     * 全都变成**空操作**，而日志上只显示"pgid 未解析"，看起来像设备问题。
+     *
+     * 调用方（`ScriptRunCoordinator`）自 P5 起就需要**提前**知道 runId
+     * （事件通道路径 `ipc/<runId>.q` 必须在 `run` 之前建好并注入环境），
+     * 因此由它生成、本方法接收，而不是反过来在 `RunHandle` 里造一个再回传。
+     *
      * @param script 待执行脚本
      * @param ctx 运行上下文（触发事件、环境变量）
+     * @param runId 本次运行的标识；**原样**成为 `RunHandle.id`
      * @return 本次运行的句柄；脚本尚未执行
      */
     suspend fun run(
         script: ScriptEntity,
         ctx: RunContext,
+        runId: String,
     ): RunHandle
 
     /**

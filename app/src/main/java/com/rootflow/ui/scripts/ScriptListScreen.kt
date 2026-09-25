@@ -91,7 +91,14 @@ internal fun ScriptListScreen(
         modifier = modifier.fillMaxSize(),
         // 内容区不再由 `RootFlowMain` 让位（阶段 7 方向 A），因此这里**不吃** Scaffold 的
         // innerPadding —— 让位已下移到本页的 `LazyColumn`（`ScriptList`）与 FAB（见下）。
-        snackbarHost = { SnackbarHost(snackbarHostState) },
+        // ★ 11e 补丁6：`SnackbarHost` 与下面那个 FAB 是**同一类浮层**（都不参与滚动容器的
+        //   `contentPadding`），因此它同样要靠自己的 `padding` 让开底栏 —— 否则被胶囊压住。
+        snackbarHost = {
+            SnackbarHost(
+                hostState = snackbarHostState,
+                modifier = Modifier.padding(bottom = NavBarReservedSpace),
+            )
+        },
         floatingActionButton = {
             FloatingActionButton(
                 onClick = { onOpenEditor(null) },

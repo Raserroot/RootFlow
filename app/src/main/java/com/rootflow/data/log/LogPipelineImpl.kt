@@ -105,33 +105,40 @@ class LogPipelineImpl(
         source: Flow<LogEntry>,
         runMeta: RunMeta?,
         batchSink: LogBatchSink?,
-    ) {
-        val state =
-            RunState(
-                runId = runId,
-                ring = RunLogRing(ringCapacity),
-                subscriberBufferCapacity = subscriberBufferCapacity,
-                meta = runMeta,
-                sink = batchSink,
-            )
-        if (runs.putIfAbsent(runId, state) != null) {
-            // 幂等：同一 runId 已在收集，忽略重复登记（防止重复缓冲与重复批次）。
-            return
-        }
-        evictIfNeeded()
-        state.collector =
-            scope.launch(dispatcher) {
-                try {
-                    collectRun(runId, source, state)
-                } catch (cancellation: CancellationException) {
-                    throw cancellation
-                } catch (error: Throwable) {
-                    // 源（通常是脚本运行的日志流）自身抛错时**不让它炸掉调用方作用域**：
-                    // 管道只负责记录与收敛。脚本失败本身会由 runtime 的 SYS 退出行体现。
-                    logSourceFailure(runId, state, error)
+    ): Job =
+        // ★ 11e 补丁4：整段「查重 → 登记 → 启动 → 回填 collector」必须在**同一把锁**内。
+        //   否则幂等分支会读到 collector 尚未回填的中间态，把一个"还没开始"的作业
+        //   当成"已在收集"交给调用方 —— 那正是本次要修的那个 bug 的镜像形态。
+        runsLock.withLock {
+            // 幂等：同一 runId 已在收集 ⇒ 返回**它那一次**的作业。
+            // 不能返回一个新建的已完成作业：那会让调用方误判"运行已经结束"。
+            runs[runId]?.collector?.let { return@withLock it }
+
+            val state =
+                RunState(
+                    runId = runId,
+                    ring = RunLogRing(ringCapacity),
+                    subscriberBufferCapacity = subscriberBufferCapacity,
+                    meta = runMeta,
+                    sink = batchSink,
+                )
+            runs[runId] = state
+            evictIfNeededLocked()
+            val collector =
+                scope.launch(dispatcher) {
+                    try {
+                        collectRun(runId, source, state)
+                    } catch (cancellation: CancellationException) {
+                        throw cancellation
+                    } catch (error: Throwable) {
+                        // 源（通常是脚本运行的日志流）自身抛错时**不让它炸掉调用方作用域**：
+                        // 管道只负责记录与收敛。脚本失败本身会由 runtime 的 SYS 退出行体现。
+                        logSourceFailure(runId, state, error)
+                    }
                 }
-            }
-    }
+            state.collector = collector
+            collector
+        }
 
     override fun observe(runId: String): Flow<LogBatch> = runs[runId]?.batches ?: emptyFlow()
 
@@ -160,18 +167,21 @@ class LogPipelineImpl(
 
     // ------------------------------------------------------------------ 内部
 
-    /** 超出 [retainedRuns] 时淘汰最久未活动的**已结束**运行。 */
-    private suspend fun evictIfNeeded() {
-        runsLock.withLock {
-            while (runs.size > retainedRuns) {
-                val victim =
-                    runs.values
-                        .filter { it.finished.get() }
-                        .minByOrNull { it.lastActivity }
-                        ?: break
-                runs.values.remove(victim)
-                victim.collector?.cancel()
-            }
+    /**
+     * 超出 [retainedRuns] 时淘汰最久未活动的**已结束**运行。
+     *
+     * ⚠️ **调用方必须已持有 [runsLock]**：11e 补丁4 起由 [startRun] 在锁内调用。
+     * 它此前自带 `withLock`，若沿用会与新写的"锁内登记"**自锁死**（Mutex 不可重入）。
+     */
+    private fun evictIfNeededLocked() {
+        while (runs.size > retainedRuns) {
+            val victim =
+                runs.values
+                    .filter { it.finished.get() }
+                    .minByOrNull { it.lastActivity }
+                    ?: break
+            runs.values.remove(victim)
+            victim.collector?.cancel()
         }
     }
 

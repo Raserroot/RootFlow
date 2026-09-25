@@ -43,8 +43,15 @@ import javax.inject.Singleton
  * 而不是报错）。因此这里如实声明为非空；`TriggeredScriptRunner` 仍用
  * try/catch 兜住"启动路径整体抛错"，并在 `catch` 里归还闸门名额。
  *
- * @property runId 本次运行的标识（与 `RunHandle.id` 对应，UI 用它订阅 `LogPipeline.observe`）
- * @property job 承载"收集 `RunHandle.output` → 馈入管道"的工作协程
+ * ## ★ 11e 补丁4：`job` 的来源变了（**这是修 bug 的关键**）
+ * 它**不再**是 `scope.launch { startRun(...) }` 的返回值 —— 那个 job 会随 `startRun`
+ * 立即返回而秒级完成，挂在它上面的收尾钩子（注销运行 / 释放闸门 / 关事件通道 /
+ * 取消超时看门狗 / 记存活时长）会**全部提前触发**。现在它是**管道内部的收集作业**
+ * （由 `LogPipeline.startRun` 交出），生命周期覆盖
+ * 「收集 `RunHandle.output` → flusher 收敛 → 收尾批推送」全程。
+ *
+ * @property runId 本次运行的标识（**就是** `RunHandle.id`，UI 用它订阅 `LogPipeline.observe`）
+ * @property job 承载本次运行的工作协程（管道内部的收集作业）
  */
 data class RunSession(
     val runId: String,
@@ -131,7 +138,10 @@ class ScriptRunCoordinator
             batchSink: LogBatchSink? = null,
             runId: String = UUID.randomUUID().toString(),
         ): RunSession {
-            val handle = shellScriptRuntime.run(script, ctx)
+            // ★ 11e 补丁4：runId 必须**进入** handle —— `ProcessGroupManager` 按 runId
+            //   读写 `.rf_pgid_<id>`，而 `terminateRun` / `cleanup` 拿到的也是 runId。
+            //   两处若不是同一个值，超时终止与熔断的"杀进程"全是空操作。
+            val handle = shellScriptRuntime.run(script, ctx, runId)
 
             // 退出码在**收集过程中就地捕获**——这是本阶段的关键取舍，见 [ExitCodeOnSysLine]。
             // 用 `var` 而不是 Channel/StateFlow：收集与 finally 在**同一个协程**里，
@@ -155,38 +165,38 @@ class ScriptRunCoordinator
                 reportOutcome(sink = outcomeSink, runId = runId, scriptId = scriptId, exitCode = exitCode)
             }
 
-            val job =
-                scope.launch {
-                    // 区分"启动失败"与"启动成功但 source 尚未走完"：
-                    // `startRun` **立即返回**（阶段 2 冻结契约），因此 finally 块会在收集
-                    // 结束**之前**执行。若在那里无条件上报，就会用"只有 null 的退出码"
-                    // 抢先占掉 `reported`，把收集结束时那次正确的上报挡掉（实测踩到）。
-                    var collectionStarted = false
-                    try {
-                        // 映射在管道外部完成：管道只认 domain 类型，不认识 runtime 类型。
-                        logPipeline.startRun(
-                            runId = runId,
-                            source =
-                                handle.output
-                                    .onEach { line -> exitCode = ExitCodeOnSysLine.of(line) ?: exitCode }
-                                    // ★ 结局上报挂在 `onCompletion` 上：它在**收集作业内部**、
-                                    //    source 走完（或失败 / 被取消）之后运行，因此此时退出码
-                                    //    已经读到。这是唯一能拿到退出码的时点。
-                                    .onCompletion { reportAfterCollection() }
-                                    .map { line -> LogMappers.toDomain(line, runId) },
-                            runMeta = runMeta,
-                            batchSink = batchSink,
-                        )
-                        collectionStarted = true
-                    } finally {
-                        // 仅在**收集从未开始**时兜底：那时 `onCompletion` 永远不会触发
-                        // （`startRun` 抛错），不报就是"运行结局丢失"——熔断器少记一次运行，
-                        // 正是本仓库反复禁止的静默失败。此处 `exitCode` 为 `null` 是**正确**的
-                        // 语义（脚本根本没跑），由接收方按"未知"处理（不计失败）。
-                        if (!collectionStarted) {
-                            reportAfterCollection()
-                        }
-                    }
+            // ★ 11e 补丁4：**不再**把 `startRun` 包进 `scope.launch`。
+            //   那个包装出来的 job 会随 `startRun` 返回而立即完成（"立即返回"是它的冻结契约），
+            //   而调用方把「注销运行 / 释放闸门 / 关事件通道 / 取消超时看门狗 / 记存活时长」
+            //   全挂在 `RunSession.job` 上 ⇒ 全部提前触发：常驻脚本因此被误判成
+            //   "活了 0 毫秒、连崩 5 次"（真机 `DAEMON_EXITED runMillis=0` ×5 → `DAEMON_GIVEN_UP`），
+            //   而脚本进程其实一直在跑。
+            //   现在直接用**管道交出的收集作业**，它的生命周期就是整次运行。
+            val collector =
+                try {
+                    // 映射在管道外部完成：管道只认 domain 类型，不认识 runtime 类型。
+                    logPipeline.startRun(
+                        runId = runId,
+                        source =
+                            handle.output
+                                .onEach { line -> exitCode = ExitCodeOnSysLine.of(line) ?: exitCode }
+                                // ★ 结局上报挂在 `onCompletion` 上：它在**收集作业内部**、
+                                //    source 走完（或失败 / 被取消）之后运行，因此此时退出码
+                                //    已经读到。这是唯一能拿到退出码的时点。
+                                .onCompletion { reportAfterCollection() }
+                                .map { line -> LogMappers.toDomain(line, runId) },
+                        runMeta = runMeta,
+                        batchSink = batchSink,
+                    )
+                } catch (error: Throwable) {
+                    // ★ 只有"收集从未开始"才走这里：`startRun` 自身抛错时 `onCompletion`
+                    //   永远不会触发，不兜底就是"运行结局丢失"——熔断器少记一次运行，
+                    //   正是本仓库反复禁止的静默失败。此处 `exitCode` 为 `null` 是**正确**的
+                    //   语义（脚本根本没跑），由接收方按"未知"处理（不计失败）。
+                    //   随后把异常**交给调用方**：启动失败应当可见（`TriggeredScriptRunner`
+                    //   的 catch 会记 `RUN_START_FAILED` 并归还闸门），而不是被静默吞掉。
+                    reportAfterCollection()
+                    throw error
                 }
 
             if (timeoutMillis > 0) {
@@ -195,11 +205,11 @@ class ScriptRunCoordinator
                     runId = runId,
                     scriptId = script.id,
                     timeoutMillis = timeoutMillis,
-                    job = job,
+                    job = collector,
                     outcomeSink = outcomeSink,
                 )
             }
-            return RunSession(runId = runId, job = job)
+            return RunSession(runId = runId, job = collector)
         }
 
         /**

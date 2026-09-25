@@ -153,7 +153,16 @@ internal fun SettingsScreen(
 
     Scaffold(
         modifier = modifier.fillMaxSize(),
-        snackbarHost = { SnackbarHost(snackbarHostState) },
+        // ★ 11e 补丁6：`SnackbarHost` 是 `Scaffold` 的**浮层**，与 FAB 同一个坑 ——
+        //   它不参与任何滚动容器的 `contentPadding`，而底栏是**浮在内容之上**的
+        //   （在 `RootFlowMain` 里，不在本 Scaffold 内）⇒ Snackbar 被胶囊压住。
+        //   量取同一个 `NavBarReservedSpace`（它已含底栏上下各 12dp 留白，**不要**再加边距）。
+        snackbarHost = {
+            SnackbarHost(
+                hostState = snackbarHostState,
+                modifier = Modifier.padding(bottom = NavBarReservedSpace),
+            )
+        },
     ) { _ ->
         Column(
             modifier =

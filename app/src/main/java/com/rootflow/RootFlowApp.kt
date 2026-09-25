@@ -39,6 +39,7 @@ import kotlinx.coroutines.launch
 import kotlinx.coroutines.sync.Mutex
 import kotlinx.coroutines.sync.withLock
 import kotlinx.coroutines.withTimeoutOrNull
+import java.util.UUID
 import javax.inject.Inject
 
 /**
@@ -1010,14 +1011,20 @@ class RootFlowApp : Application() {
             )
         Log.i(TAG, "SCRIPT_VERIFY begin script=${script.name}")
 
+        // ★ 11e 补丁4：runId 现在由调用方给出 —— 它同时决定 `.rf_pgid_<id>` /
+        //   `.rf_err_<id>` 的文件名与日志里那个 id。自检路径自己造一个即可
+        //   （它不落库、不参与熔断），下面那条日志把它与 `handle.id` 一起打出来，
+        //   真机上"两者是否相等"因此可以一眼判读。
+        val runId = UUID.randomUUID().toString()
         val handle =
             shellScriptRuntime.run(
                 script = script,
                 ctx = RunContext(triggerEvent = null, env = emptyMap()),
+                runId = runId,
             )
         // handle.id 会出现在这条日志里：它同时是 /tmp/.rf_err_<handle.id> 的文件名组成部分，
         // 用于把真机上残留的中转文件与具体运行一一对应（阶段 1c 第二步诊断手段）。
-        Log.i(TAG, "SCRIPT_VERIFY handle=${handle.id} startedAt=${handle.startedAt}")
+        Log.i(TAG, "SCRIPT_VERIFY runId=$runId handle=${handle.id} startedAt=${handle.startedAt}")
 
         handle.output.collect { line: LogLine ->
             Log.i(TAG, "SCRIPT_LOG stream=${line.stream} text=${line.text}")

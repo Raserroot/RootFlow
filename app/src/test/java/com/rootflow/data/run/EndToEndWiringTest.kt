@@ -696,8 +696,9 @@ class EndToEndWiringTest {
      */
     private fun shellRuntimeFor(runtime: FakeScriptRuntime): ShellScriptRuntime {
         val shell = mockk<ShellScriptRuntime>()
-        coEvery { shell.run(any(), any()) } answers {
-            runtime.recordRun(firstArg<ScriptEntity>(), secondArg<RunContext>())
+        coEvery { shell.run(any(), any(), any()) } answers {
+            // 11e 补丁4：runId 原样透传（`ScriptRuntime.run` 新增的第三个形参）。
+            runtime.recordRun(firstArg<ScriptEntity>(), secondArg<RunContext>(), thirdArg<String>())
         }
         return shell
     }

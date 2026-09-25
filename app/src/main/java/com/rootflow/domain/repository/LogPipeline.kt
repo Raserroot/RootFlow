@@ -3,6 +3,7 @@ package com.rootflow.domain.repository
 import com.rootflow.domain.model.LogBatch
 import com.rootflow.domain.model.LogEntry
 import com.rootflow.domain.model.LogTail
+import kotlinx.coroutines.Job
 import kotlinx.coroutines.flow.Flow
 
 /**
@@ -103,23 +104,42 @@ interface LogPipeline {
     /**
      * 开始接收一次运行的日志。
      *
-     * 立即返回，收集在后台进行；`source` 正常结束、抛出异常、或所在作用域被取消时，
-     * 该运行会被自动收尾（发最后一批 `runFinished = true`）。
+     * **立即返回**，收集在返回的作业里进行；`source` 正常结束、抛出异常、或所在作用域
+     * 被取消时，该运行会被自动收尾（发最后一批 `runFinished = true`）。
      *
-     * 对同一 [runId] 重复调用是**幂等**的：第二次起被忽略（避免重复缓冲与重复批次）。
+     * 对同一 [runId] 重复调用是**幂等**的：第二次起被忽略（避免重复缓冲与重复批次），
+     * 并返回**第一次**那次收集的作业。
      *
-     * @param runId 运行标识；与 `RunHandle.id` 一致
+     * ## ★ 为什么必须把作业交出来（11e 补丁4 修的真缺陷）
+     * "这次运行结束了"的唯一可靠信号在**收集作业内部**（见 `LogBatchSink.onRunFinished`），
+     * 而"立即返回"意味着调用方**拿不到**它 —— 于是调用方若把运行收尾的钩子挂在
+     * `startRun` 那次调用上，钩子会在运行**刚开始**时就触发。
+     *
+     * 生产上正是这样炸的：`ScriptRunCoordinator` 把它包在 `scope.launch { … }` 里，
+     * 那个 `job` 随 `startRun` 返回而完成，于是**注销运行 / 释放闸门 / 关事件通道 /
+     * 取消超时看门狗 / 记存活时长**全部提前执行 —— 常驻脚本被误判成
+     * "活了 0 毫秒、连崩 5 次"（真机日志 `DAEMON_EXITED runMillis=0` ×5 → `DAEMON_GIVEN_UP`），
+     * 而脚本进程其实一直在跑。
+     *
+     * ⚠️ **不得**把本方法改成"等收集完再返回"（`collector.join()`）：那会打红
+     * `LogPipelineImplTest` 的一批既有断言（`tail honours the limit` /
+     * `slow subscriber does not block the producer` 等**正是**断言"运行中可观测"）。
+     * **交出作业**与**立即返回**两者同时成立，才是正确形态。
+     *
+     * @param runId 运行标识；**必须**与 `RunHandle.id` 一致 —— 否则 `terminateRun`
+     *   按 runId 找不到 `.rf_pgid_<id>` 文件，超时/熔断的"杀进程"会变成空操作
      * @param source 已映射的日志来源；通常由 `handle.output.map { … }` 得到
      * @param runMeta 运行元信息；供 [batchSink] 带上 `scriptId` / `triggerEvent`
      *   （阶段 3d 的落库需要，管道自身不使用）
      * @param batchSink 推送回调；`null` 表示无落库订阅者（例如阶段 2 的既有调用方与单测）
+     * @return 承载本次收集的作业；它在 `source` 走完、flusher 收敛、收尾批推送**之后**才完成
      */
     suspend fun startRun(
         runId: String,
         source: Flow<LogEntry>,
         runMeta: RunMeta? = null,
         batchSink: LogBatchSink? = null,
-    )
+    ): Job
 
     /**
      * 订阅某次运行的批次流。

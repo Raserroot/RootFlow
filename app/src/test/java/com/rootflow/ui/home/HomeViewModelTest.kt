@@ -27,6 +27,7 @@ import com.rootflow.ui.scripts.FakeScriptRepository
 import kotlinx.coroutines.CompletableDeferred
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.ExperimentalCoroutinesApi
+import kotlinx.coroutines.Job
 import kotlinx.coroutines.flow.Flow
 import kotlinx.coroutines.flow.MutableSharedFlow
 import kotlinx.coroutines.flow.MutableStateFlow
@@ -749,12 +750,15 @@ class HomeViewModelTest {
 
         private val streams = mutableMapOf<String, MutableSharedFlow<LogBatch>>()
 
+        // 11e 补丁4：本文件只覆盖终端的 `tail` / `observe` 路径，**不覆盖**运行的作业语义，
+        // 因此这里返回一个已完成的占位作业即可。
+        // ⚠️ 不要把这个形态当范例 —— "job 提前完成"在生产上正是补丁4 要修的那个缺陷。
         override suspend fun startRun(
             runId: String,
             source: Flow<LogEntry>,
             runMeta: RunMeta?,
             batchSink: com.rootflow.domain.repository.LogBatchSink?,
-        ): Unit = Unit
+        ): Job = Job()
 
         override fun observe(runId: String): Flow<LogBatch> {
             calls += "observe:$runId"

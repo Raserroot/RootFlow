@@ -22,6 +22,7 @@ import io.mockk.mockk
 import io.mockk.mockkStatic
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.ExperimentalCoroutinesApi
+import kotlinx.coroutines.Job
 import kotlinx.coroutines.flow.Flow
 import kotlinx.coroutines.flow.flow
 import kotlinx.coroutines.test.StandardTestDispatcher
@@ -139,6 +140,53 @@ class TriggeredScriptRunnerTest {
                     .single()
                     .second.env[TriggeredScriptRunner.ENV_EVENT_FIFO],
                 "FIFO 路径必须注入脚本环境 —— 脚本靠它 read 后续事件",
+            )
+        }
+
+    // ★ 11e 补丁4 的「会话 / 闸门必须活到运行结束」这条语义，**已由上面既有的**
+    //   `a run whose source hangs keeps the gate held` 与
+    //   `a script is rejected while its own run is still in flight` 覆盖，
+    //   此处不再重复断言。
+    //
+    //   它们此前一直是**假绿**：管道假件当时在 `startRun` 里同步收集 source，
+    //   恰好替生产把那层包装 job 撑住了。补齐"假件与生产同形"之后，
+    //   把 `RunSession.job` 换成立刻完成的空作业会让本文件 **4 条用例同时失败**
+    //   （已实测），这正是本缺陷的回归防护。
+
+    /**
+     * ★ **`runId` 必须原样成为 `RunHandle.id`**（11e 补丁4 的第二处缺陷）。
+     *
+     * 此前 `ShellScriptRuntime.run` 调 `createRunHandle { }` **不传 id**，于是句柄自己
+     * 造了一个随机 UUID，而日志 / `RunSessionRegistry` / `terminateRun` 用的是另一个
+     * `runId`。后果是 `terminateRun(runId)` 永远找不到 `.rf_pgid_<id>` 文件 ——
+     * **超时终止与熔断的"杀进程"全是空操作**，日志上却只显示"pgid 未解析"，
+     * 看起来像设备问题。
+     *
+     * 现在由调度侧生成 `runId` 并贯穿到底，这条断言把两者钉在一起。
+     */
+    @Test
+    fun `the session runId is handed down to the runtime unchanged`() =
+        runTest {
+            val repo = FakeScriptRepository().apply { put(2L, okScript(script(2L))) }
+            val fixture =
+                fixture(
+                    repo,
+                    scope = backgroundScope,
+                    runtime = FakeScriptRuntime(RuntimeOutcome.Hanging(defaultLines().first())),
+                )
+
+            fixture.runner.start(2L, "boot", null)
+            advanceUntilIdle()
+
+            val sessionRunId =
+                fixture.sessions
+                    .activeRuns()
+                    .single()
+                    .first
+            assertEquals(
+                sessionRunId,
+                fixture.runtime.runIds.single(),
+                "★ 会话的 runId 必须原样传给 runtime（它同时决定 .rf_pgid_<id> 的文件名）",
             )
         }
 
@@ -759,7 +807,10 @@ class TriggeredScriptRunnerTest {
     ): Fixture {
         val gate = RunAdmissionGateImpl(maxConcurrentRuns)
         val sink = NoopSink
-        val pipeline = RecordingLogPipeline()
+        // 11e 补丁4：管道假件现在需要作用域（它与生产同形：后台收集并交出作业）。
+        // 用**与 runner 同一个** scope —— 生产上两者都是应用级作用域。
+        val runScope = scope ?: this
+        val pipeline = RecordingLogPipeline(runScope)
         val sessions = RunSessionRegistry()
         val outcomes = RecordingOutcomeSink()
         val coordinator =
@@ -776,7 +827,7 @@ class TriggeredScriptRunnerTest {
                 batchSink = sink,
                 // 默认用测试作用域：`runTest` 会在结束前等齐它的子协程（= 运行已收尾）。
                 // 会永久挂起或抛错的用例显式传 `backgroundScope`（协程测试约定 §9.2）。
-                scope = scope ?: this,
+                scope = runScope,
                 circuitBreaker = breaker,
                 masterSwitch = masterSwitch,
                 eventChannel = eventChannel,
@@ -796,11 +847,13 @@ class TriggeredScriptRunnerTest {
      */
     private fun shellRuntimeFor(runtime: FakeScriptRuntime): ShellScriptRuntime {
         val shell = mockk<ShellScriptRuntime>()
-        coEvery { shell.run(any(), any()) } answers {
+        coEvery { shell.run(any(), any(), any()) } answers {
             val script = firstArg<ScriptEntity>()
             val ctx = secondArg<RunContext>()
-            // 让假件记录入参（断言映射用），并返回由假件产出的句柄
-            runtime.recordRun(script, ctx)
+            // 11e 补丁4：**runId 必须原样传下去** —— "它就是 RunHandle.id"这条断言
+            // 靠这里成立（此前留空 ⇒ 假件自己造 UUID ⇒ 与日志/terminate 的 runId 对不上）。
+            val runId = thirdArg<String>()
+            runtime.recordRun(script, ctx, runId)
         }
         return shell
     }
@@ -821,7 +874,7 @@ class TriggeredScriptRunnerTest {
             source: Flow<LogEntry>,
             runMeta: RunMeta?,
             batchSink: LogBatchSink?,
-        ): Unit = throw IllegalStateException("pipeline refused")
+        ): Job = throw IllegalStateException("pipeline refused")
 
         override fun observe(runId: String): Flow<LogBatch> = flow { }
 

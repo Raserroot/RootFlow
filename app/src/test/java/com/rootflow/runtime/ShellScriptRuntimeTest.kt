@@ -14,6 +14,7 @@ import org.junit.jupiter.api.Assertions.assertNotEquals
 import org.junit.jupiter.api.Assertions.assertThrows
 import org.junit.jupiter.api.Assertions.assertTrue
 import org.junit.jupiter.api.Test
+import java.util.UUID
 
 /**
  * [ShellScriptRuntime] 单元测试。
@@ -49,7 +50,7 @@ class ShellScriptRuntimeTest {
         runTest {
             stubExec(stdout = "one\ntwo\nthree", stderr = "", exitCode = 0)
 
-            val lines = runtime.run(entity(), context()).output.toList()
+            val lines = runtime.run(entity(), context(), newRunId()).output.toList()
 
             val stdout = lines.filter { it.stream == LogStream.STDOUT }.map { it.text }
             assertEquals(listOf("one", "two", "three"), stdout)
@@ -61,7 +62,7 @@ class ShellScriptRuntimeTest {
             // 新契约：stderr 经 stdout 通道回来，末尾标记声明 stderr 行数
             stubExec(stdout = "out1\nout2\nerr1\n__RF_ERR_LINES__1", stderr = "", exitCode = 0)
 
-            val lines = runtime.run(entity(), context()).output.toList()
+            val lines = runtime.run(entity(), context(), newRunId()).output.toList()
 
             assertEquals(
                 listOf("out1", "out2"),
@@ -84,7 +85,7 @@ class ShellScriptRuntimeTest {
         runTest {
             stubExec(stdout = "hello", stderr = "", exitCode = 0)
 
-            val lines = runtime.run(entity(id = 42L), context()).output.toList()
+            val lines = runtime.run(entity(id = 42L), context(), newRunId()).output.toList()
 
             assertEquals(LogStream.SYS, lines.first().stream)
             assertEquals("script 42 started", lines.first().text)
@@ -99,7 +100,7 @@ class ShellScriptRuntimeTest {
         runTest {
             stubExec(stdout = "boom\n__RF_ERR_LINES__1", stderr = "", exitCode = 7)
 
-            val lines = runtime.run(entity(id = 5L), context()).output.toList()
+            val lines = runtime.run(entity(id = 5L), context(), newRunId()).output.toList()
 
             assertEquals("script 5 exited with code 7", lines.last().text)
             assertEquals(listOf("boom"), lines.filter { it.stream == LogStream.STDERR }.map { it.text })
@@ -112,7 +113,7 @@ class ShellScriptRuntimeTest {
 
             val lines =
                 runtime
-                    .run(entity(id = 9L), RunContext(triggerEvent = "boot", env = emptyMap()))
+                    .run(entity(id = 9L), RunContext(triggerEvent = "boot", env = emptyMap()), newRunId())
                     .output
                     .toList()
 
@@ -124,7 +125,7 @@ class ShellScriptRuntimeTest {
         runTest {
             stubExec(stdout = "a\n\nb\n", stderr = "", exitCode = 0)
 
-            val lines = runtime.run(entity(), context()).output.toList()
+            val lines = runtime.run(entity(), context(), newRunId()).output.toList()
 
             assertEquals(
                 listOf("a", "b"),
@@ -161,6 +162,7 @@ class ShellScriptRuntimeTest {
                         triggerEvent = "boot",
                         env = mapOf("ROOTFLOW_EVENT_PAYLOAD" to """{"source":"boot"}"""),
                     ),
+                    newRunId(),
                 ).output
                 .toList()
 
@@ -202,6 +204,7 @@ class ShellScriptRuntimeTest {
                                 "ROOTFLOW_SAFEMODE" to "false",
                             ),
                     ),
+                    newRunId(),
                 ).output
                 .toList()
 
@@ -269,6 +272,7 @@ class ShellScriptRuntimeTest {
                         // 换行无法在 POSIX 单引号串里表示：硬拼会把一条 export 拆成两条命令（注入面）
                         env = mapOf("EVIL" to "x\necho PWNED", "OK" to "fine"),
                     ),
+                    newRunId(),
                 ).output
                 .toList()
 
@@ -303,7 +307,7 @@ class ShellScriptRuntimeTest {
                 ShellResult(stdout = "", stderr = "", exitCode = 0)
             }
 
-            runtime.run(entity(content = "echo hi"), context()).output.toList()
+            runtime.run(entity(content = "echo hi"), context(), newRunId()).output.toList()
 
             val command = submitted.single()
             // 包裹的必要性：>&2 需要 shell 解释；exit 只能终止子 shell，
@@ -338,7 +342,7 @@ class ShellScriptRuntimeTest {
                 ShellResult(stdout = "", stderr = "", exitCode = 0)
             }
 
-            runtime.run(entity(content = "echo 'quoted'"), context()).output.toList()
+            runtime.run(entity(content = "echo 'quoted'"), context(), newRunId()).output.toList()
 
             // POSIX 惯用法：正文内的 ' 先由 ShellScriptRuntime 写成 '\''，
             // 随后 ProcessGroupManager 把内层整体塞进 setsid sh -c '…' 时**再转义一次**。
@@ -359,7 +363,7 @@ class ShellScriptRuntimeTest {
         runTest {
             stubExec(stdout = "", stderr = "", exitCode = 0)
 
-            val lines = runtime.run(entity(id = 8L, content = "echo 12345"), context()).output.toList()
+            val lines = runtime.run(entity(id = 8L, content = "echo 12345"), context(), newRunId()).output.toList()
 
             val head = lines.take(2).map { it.text }
             assertEquals("script 8 started", head[0])
@@ -374,7 +378,7 @@ class ShellScriptRuntimeTest {
             // 目标设备上 stderr 只能经 stdout 通道回来，末尾标记给出 stderr 行数
             stubExec(stdout = "one\ntwo\nthree\noops\n__RF_ERR_LINES__1", stderr = "", exitCode = 0)
 
-            val lines = runtime.run(entity(), context()).output.toList()
+            val lines = runtime.run(entity(), context(), newRunId()).output.toList()
 
             assertEquals(
                 listOf("one", "two", "three"),
@@ -392,7 +396,7 @@ class ShellScriptRuntimeTest {
         runTest {
             stubExec(stdout = "out\nerr1\nerr2\n__RF_ERR_LINES__2", stderr = "", exitCode = 0)
 
-            val lines = runtime.run(entity(), context()).output.toList()
+            val lines = runtime.run(entity(), context(), newRunId()).output.toList()
 
             assertFalse(
                 lines.any { it.text.startsWith("__RF_ERR_LINES__") },
@@ -407,7 +411,7 @@ class ShellScriptRuntimeTest {
         runTest {
             stubExec(stdout = "a\nb", stderr = "", exitCode = 0)
 
-            val lines = runtime.run(entity(), context()).output.toList()
+            val lines = runtime.run(entity(), context(), newRunId()).output.toList()
 
             assertEquals(
                 listOf("a", "b"),
@@ -429,8 +433,11 @@ class ShellScriptRuntimeTest {
 
             val lines =
                 runtime
-                    .run(entity(content = "printf \"one\\ntwo\\nthree\\n\"; printf \"oops\\n\" >&2; exit 0"), context())
-                    .output
+                    .run(
+                        entity(content = "printf \"one\\ntwo\\nthree\\n\"; printf \"oops\\n\" >&2; exit 0"),
+                        context(),
+                        newRunId(),
+                    ).output
                     .toList()
 
             assertEquals(
@@ -449,7 +456,7 @@ class ShellScriptRuntimeTest {
         runTest {
             stubExec(stdout = "__RF_ERR_LINES__0", stderr = "", exitCode = 1)
 
-            val lines = runtime.run(entity(id = 4L), context()).output.toList()
+            val lines = runtime.run(entity(id = 4L), context(), newRunId()).output.toList()
 
             assertEquals(
                 "script 4 exited with code 1",
@@ -464,7 +471,7 @@ class ShellScriptRuntimeTest {
     fun `second collection of the same handle throws IllegalStateException`() =
         runTest {
             stubExec(stdout = "only-once", stderr = "", exitCode = 0)
-            val handle = runtime.run(entity(), context())
+            val handle = runtime.run(entity(), context(), newRunId())
 
             val first = handle.output.toList()
             assertEquals(1, first.count { it.stream == LogStream.STDOUT })
@@ -487,7 +494,7 @@ class ShellScriptRuntimeTest {
                 execCount++
                 ShellResult(stdout = "a\nb\nc", stderr = "", exitCode = 0)
             }
-            val handle = runtime.run(entity(), context())
+            val handle = runtime.run(entity(), context(), newRunId())
 
             // 首次收集只取到第一条脚本 stdout 后即中断（触发流取消）。
             // 流开头有两条 SYS 头行（started / exec），所以跳过它们。
@@ -512,7 +519,7 @@ class ShellScriptRuntimeTest {
                 execCount++
                 ShellResult(stdout = "should-not-run", stderr = "", exitCode = 0)
             }
-            val handle = runtime.run(entity(id = 3L), context())
+            val handle = runtime.run(entity(id = 3L), context(), newRunId())
 
             runtime.kill(handle)
             assertTrue(handle.killed, "kill 后 killed 应为 true")
@@ -528,15 +535,15 @@ class ShellScriptRuntimeTest {
     @Test
     fun `handle is not killed by default`() =
         runTest {
-            val handle = runtime.run(entity(), context())
+            val handle = runtime.run(entity(), context(), newRunId())
             assertFalse(handle.killed)
         }
 
     @Test
     fun `each handle gets a distinct run id`() =
         runTest {
-            val a = runtime.run(entity(), context())
-            val b = runtime.run(entity(), context())
+            val a = runtime.run(entity(), context(), newRunId())
+            val b = runtime.run(entity(), context(), newRunId())
             assertNotEquals(a.id, b.id, "每次运行应有独立 UUID")
         }
 
@@ -582,6 +589,51 @@ class ShellScriptRuntimeTest {
 
     private fun context(): RunContext = RunContext(triggerEvent = null, env = emptyMap())
 
+    /**
+     * 11e 补丁4：`ScriptRuntime.run` 现在要求调用方给出 `runId`（它同时决定
+     * `.rf_pgid_<id>` / `.rf_err_<id>` 的文件名与日志里那个 id）。
+     *
+     * 本文件的用例各自只验证输出映射 / 日志分流 / 退出码 / 命令生成，**都不关心** runId，
+     * 因此统一走这个薄封装，而不是把随机 UUID 在 29 个调用点各抄一遍。
+     *
+     * ⚠️ 这**不是**给生产留的后门：`runId` 在生产路径上必须由调度侧生成并贯穿到底。
+     */
+    private fun newRunId(): String = UUID.randomUUID().toString()
+
+    // ------------------------------------- 11e 补丁4：runId 的贯穿
+
+    /**
+     * ★ **`run` 必须把调用方给的 `runId` 原样用作 `RunHandle.id`**。
+     *
+     * ## 它防的是什么
+     * 此前 `run` 调 `createRunHandle { }` **不传 id**，句柄于是自己造了个随机 UUID。
+     * 而 pgid / err 文件都以 `handle.id` 命名（`ProcessGroupManager` 的
+     * `.rf_pgid_<id>`、`wrapForShell` 的 `.rf_err_<id>`），日志与 `terminateRun`
+     * 用的却是**另一个** `runId` ⇒ `terminateRun(runId)` 永远找不到文件，
+     * **超时终止与熔断的"杀进程"全是空操作**，而日志只显示"pgid 未解析"。
+     *
+     * ## 为什么这条必须写在本文件
+     * 本文件的 `ShellScriptRuntime` 是**真实实现**（只打桩 `RootShellManager`）。
+     * `TriggeredScriptRunnerTest` 那条同类断言**覆盖不到这里** —— 那里
+     * `ShellScriptRuntime` 被整体 MockK 掉了，把 `createRunHandle(id = …)` 改回
+     * 不传 id 它照样是绿的（已实测）。
+     */
+    @Test
+    fun `the handle id is exactly the runId handed in`() =
+        runTest {
+            stubExec(stdout = "hi", stderr = "", exitCode = 0)
+
+            val runId = newRunId()
+            val handle = runtime.run(entity(), context(), runId)
+
+            assertEquals(
+                runId,
+                handle.id,
+                "★ handle.id 必须**就是**传入的 runId（否则 .rf_pgid_<id> 与日志对不上，" +
+                    "terminateRun 找不到文件 ⇒ 杀进程是空操作）",
+            )
+        }
+
     // ------------------------------------- 退出码标记（阶段 1c 新增的回归防护）
 
     @Test
@@ -592,7 +644,7 @@ class ShellScriptRuntimeTest {
             coEvery { rootShellManager.exec(any()) } returns
                 ShellResult(stdout = "out\n${EXIT_MARKER}42", stderr = "", exitCode = 0)
 
-            val lines = runtime.run(entity(id = 77L), context()).output.toList()
+            val lines = runtime.run(entity(id = 77L), context(), newRunId()).output.toList()
 
             assertEquals(
                 "script 77 exited with code 42",
@@ -607,7 +659,7 @@ class ShellScriptRuntimeTest {
             // 被 kill 的运行不会执行到自报退出码那一步
             stubExec(stdout = "partial", stderr = "", exitCode = 143, includeExitMarker = false)
 
-            val lines = runtime.run(entity(id = 78L), context()).output.toList()
+            val lines = runtime.run(entity(id = 78L), context(), newRunId()).output.toList()
 
             assertEquals("script 78 exited with code 143", lines.last().text)
         }
@@ -617,7 +669,7 @@ class ShellScriptRuntimeTest {
         runTest {
             stubExec(stdout = "only", stderr = "", exitCode = 0)
 
-            val lines = runtime.run(entity(), context()).output.toList()
+            val lines = runtime.run(entity(), context(), newRunId()).output.toList()
 
             assertTrue(
                 lines.none { it.text.startsWith(EXIT_MARKER) },
@@ -636,7 +688,7 @@ class ShellScriptRuntimeTest {
                     exitCode = 0,
                 )
 
-            val lines = runtime.run(entity(id = 79L), context()).output.toList()
+            val lines = runtime.run(entity(id = 79L), context(), newRunId()).output.toList()
 
             assertEquals(listOf("a"), lines.filter { it.stream == LogStream.STDOUT }.map { it.text })
             assertEquals(listOf("err"), lines.filter { it.stream == LogStream.STDERR }.map { it.text })
@@ -653,8 +705,8 @@ class ShellScriptRuntimeTest {
                 ShellResult(stdout = "${EXIT_MARKER}0", stderr = "", exitCode = 0)
             }
 
-            runtime.run(entity(), context()).output.toList()
-            runtime.run(entity(), context()).output.toList()
+            runtime.run(entity(), context(), newRunId()).output.toList()
+            runtime.run(entity(), context(), newRunId()).output.toList()
 
             val paths =
                 submitted
