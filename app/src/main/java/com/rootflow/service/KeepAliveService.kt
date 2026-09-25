@@ -10,6 +10,7 @@ import com.rootflow.data.service.ForegroundServiceController
 import com.rootflow.data.service.ServiceNotificationChannels
 import com.rootflow.data.service.ServiceNotificationIds
 import com.rootflow.domain.service.ForegroundState
+import com.rootflow.domain.service.KeepAliveWatchdog
 import com.rootflow.domain.service.ServiceNotificationModel
 import com.rootflow.domain.service.ServiceNotificationText
 import dagger.hilt.android.AndroidEntryPoint
@@ -64,6 +65,17 @@ class KeepAliveService : Service() {
     lateinit var channels: ServiceNotificationChannels
 
     /**
+     * 保活看门狗（阶段 12c）。
+     *
+     * 服务与它互相知道对方：服务 `register()` 时让看门狗**排下一次检查**，
+     * 服务停止时让看门狗知道"本进程里已经没有活着的服务了"（[KeepAliveWatchdog.onServiceStopped]）。
+     * 反向的那条边（看门狗把服务拉起来）不在这里 —— 它走
+     * `AlarmFireReceiver` → `KeepAliveHolder` → 看门狗，因为那一刻**本服务并不存在**。
+     */
+    @Inject
+    lateinit var keepAliveWatchdog: KeepAliveWatchdog
+
+    /**
      * 是否已经前台化过。
      *
      * sticky 重启后系统会再次投递 `onStartCommand`（同一实例），此时**必须重新前台化**：
@@ -102,6 +114,13 @@ class KeepAliveService : Service() {
         if (action == ACTION_STOP) {
             Log.i(TAG, "FGS_STOPPED reason=user")
             controller.unregister()
+            // ★ 阶段 12c：用户**明确停止**服务 ⇒ 必须撤掉看门狗。
+            //   少了这一行，15 分钟后心跳会把服务拉回来 —— 用户看到的是
+            //   "我明明点了停止，它自己又起来了"，属本仓库最忌讳的形态。
+            //   顺带清掉"本进程见过服务"这条事实，让下一次心跳的判定留在正确的状态上。
+            runCatching { keepAliveWatchdog.cancel() }
+                .onFailure { Log.w(TAG, "FGS_STOP_CANCEL_WATCHDOG_FAILED ${describe(it)}") }
+            keepAliveWatchdog.onServiceStopped()
             ServiceCompat.stopForeground(this, ServiceCompat.STOP_FOREGROUND_REMOVE)
             stopSelf()
             return START_NOT_STICKY
@@ -116,8 +135,39 @@ class KeepAliveService : Service() {
     override fun onDestroy() {
         Log.i(TAG, "FGS_DESTROYED generation=$generationCounter")
         controller.unregister()
+        // ★ 阶段 12c：让看门狗知道"本进程里已经没有活着的服务"。
+        //   这是它能判出"该自愈了"的唯一来源（判定表见 `KeepAliveDecision`）——
+        //   漏掉这一行，服务被停掉之后看门狗会以为它还活着，**永不尝试拉起**，
+        //   而且日志里一行都不会有。
+        keepAliveWatchdog.onServiceStopped()
         ServiceCompat.stopForeground(this, ServiceCompat.STOP_FOREGROUND_REMOVE)
         super.onDestroy()
+    }
+
+    /**
+     * 用户从最近任务划掉 App（阶段 12c 落地；此前是空实现）。
+     *
+     * ## 这里**不停服务** —— 这是有意的，也是清单写 `stopWithTask="false"` 的原因
+     * "划掉任务"表达的是"我不想看到这个界面"，不是"我不想让它跑"：
+     * 常驻脚本与事件监听的价值恰恰在于**没有界面时也在工作**。
+     * 真正表达"停"的入口是常驻通知上的「停止服务」按钮（`ACTION_STOP`）。
+     *
+     * ## 那这里做什么（**只做两件"提醒与自愈"的事，不做任何黑产保活**）
+     * 1. **确保看门狗在跑**：某些 ROM 在划掉任务时会连带取消该应用的全部闹钟，
+     *    而那正是"服务被系统杀掉之后能回来"的唯一机制 ⇒ 重新排一次（幂等）
+     * 2. **重投常驻通知**：同一场景下通知有时会被一并清掉，而它是用户唯一的状态指示
+     *
+     * 不做的事（与设计表一致）：不启第二个进程、不建 1 像素 Activity、不放无声音乐。
+     */
+    override fun onTaskRemoved(rootIntent: Intent?) {
+        Log.i(TAG, "FGS_TASK_REMOVED reason=task swiped away (service stays: stopWithTask=false)")
+
+        runCatching { keepAliveWatchdog.ensureScheduled() }
+            .onFailure { Log.w(TAG, "FGS_TASK_REMOVED ensure watchdog failed: ${describe(it)}") }
+
+        controller.currentNotification()?.let { model -> promote(model) }
+
+        super.onTaskRemoved(rootIntent)
     }
 
     /**
@@ -181,18 +231,33 @@ class KeepAliveService : Service() {
         fun generation(): Int = generationCounter
 
         /**
-         * 拉服务起来的便捷入口（`MainActivity` 与通知按钮共用一条路径）。
+         * 拉服务起来的便捷入口（`MainActivity`、通知按钮、保活看门狗共用一条路径）。
          *
          * 传 `action = null` 表示"只是确保它在跑"，不触发任何控制动作。
+         *
+         * ## 为什么返回 `Boolean`（阶段 12c 新增）
+         * 看门狗需要知道**这次自愈请求有没有被系统接受**：Android 14+ 会拒绝
+         * "由非精确闹钟在后台启动前台服务"（见 `AndroidKeepAliveWaker` 的 KDoc），
+         * 而那条路径不能静默 —— 请求被拒时 waker 会降级成一条如实通知。
+         *
+         * **它的语义只是"请求已被系统接受"**，不是"服务已经在前台"：
+         * 前台化仍可能失败（背景限制 / 类型权限），那由服务自己的
+         * `FGS_START_FAILED` 记录。两件事不要混为一谈（`AGENT_PROTOCOL.md §8.2`）。
+         *
+         * @return `true` = 启动请求已受理；`false` = 被系统拒绝（原因已记入 `FGS_START_REQUEST_FAILED`）
          */
         fun start(
             context: Context,
             action: String? = null,
-        ) {
+        ): Boolean {
             val intent = Intent(context, KeepAliveService::class.java)
             if (action != null) intent.action = action
-            runCatching { context.startForegroundService(intent) }
+            return runCatching { context.startForegroundService(intent) }
                 .onFailure { Log.w(TAG, "FGS_START_REQUEST_FAILED reason=${it::class.java.name}: ${it.message}") }
+                .isSuccess
         }
     }
+
+    /** 异常摘要（含类名：`ForegroundServiceStartNotAllowedException` 这类信息只在类名里有）。 */
+    private fun describe(error: Throwable): String = error::class.java.name + ": " + (error.message ?: "<no message>")
 }

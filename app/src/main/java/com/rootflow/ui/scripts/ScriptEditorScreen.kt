@@ -236,6 +236,20 @@ internal fun ScriptEditorScreen(
             onKeepEditing = { confirmingDiscard = false },
         )
     }
+
+    // ★ 危险指令确认框（用户需求，2026-09-25）。
+    //   它由 `uiState.pendingDanger` 驱动（**状态**而不是一次性事件）：
+    //   旋转屏幕后弹窗还在，不会出现"用户以为自己点错了"的反复弹窗。
+    //
+    //   两个按钮的文案是**动词短语**（「继续保存」/「让我再想想」），与「放弃修改？」
+    //   那个确认框同一条纪律：`确定/取消` 在"我到底要不要存"这个语境下无法判断。
+    state.pendingDanger?.let { prompt ->
+        ScriptDangerDialog(
+            prompt = prompt,
+            onConfirm = viewModel::confirmDangerAndSave,
+            onDismiss = viewModel::dismissDanger,
+        )
+    }
 }
 
 /** 装载中：给一个转圈而不是空白（空白会被读成"这个脚本是空的"）。 */
@@ -1038,6 +1052,50 @@ private fun DiscardDialog(
         },
         dismissButton = {
             TextButton(onClick = onKeepEditing) { Text(text = "继续编辑") }
+        },
+    )
+}
+
+/**
+ * 「脚本包含危险指令」确认框（用户需求，2026-09-25）。
+ *
+ * ## 它**不是**一个拦截，是一道"你确定吗"
+ * 点「继续保存」走的是与普通保存**完全相同**的路径（`confirmDangerAndSave` → 重跑校验 → 落库）。
+ * 扫描器不阻断保存 —— 这是已批准的范围裁定：有 root 的脚本本来就能做任何事，
+ * 这里只负责让用户在写下去之前知道自己在写什么。
+ *
+ * ## 文案全部来自 [ScriptDangerProjections]（纯函数）
+ * 本仓库**没有 UI 测试**（决策 B）⇒ 写在 Composable 里的分支覆盖率恒为 0。
+ * 标题的两档措辞、正文的"列出几条 + 折叠其余"、脚注的免责说明都在纯函数里，有穷举单测。
+ *
+ * ## `onDismissRequest` 与「让我再想想」是同一件事
+ * 点弹窗外部 / 按返回 = 再想想（回到编辑页，什么都不写）。
+ * **不**把它做成"点击外部即继续保存"——那会让一次误触变成一次落库。
+ */
+@Composable
+private fun ScriptDangerDialog(
+    prompt: ScriptDangerPrompt,
+    onConfirm: () -> Unit,
+    onDismiss: () -> Unit,
+) {
+    AlertDialog(
+        onDismissRequest = onDismiss,
+        title = { Text(text = ScriptDangerProjections.title(prompt.highest)) },
+        text = {
+            Column(verticalArrangement = Arrangement.spacedBy(10.dp)) {
+                Text(text = ScriptDangerProjections.body(prompt))
+                Text(
+                    text = ScriptDangerProjections.footnote(),
+                    style = MaterialTheme.typography.bodySmall,
+                    color = MaterialTheme.colorScheme.onSurfaceVariant,
+                )
+            }
+        },
+        confirmButton = {
+            TextButton(onClick = onConfirm) { Text(text = ScriptDangerProjections.CONFIRM_LABEL) }
+        },
+        dismissButton = {
+            TextButton(onClick = onDismiss) { Text(text = ScriptDangerProjections.DISMISS_LABEL) }
         },
     )
 }

@@ -1,6 +1,7 @@
 package com.rootflow.data.service
 
 import android.util.Log
+import com.rootflow.data.event.SafeModeSnapshot
 import com.rootflow.domain.event.TripReason
 import com.rootflow.domain.service.ForegroundState
 import com.rootflow.domain.service.KeepAliveHealthCheck
@@ -62,6 +63,12 @@ class ForegroundServiceControllerTest {
 
     private val daemonSupervisor = RecordingDaemonSupervisor()
 
+    /** 阶段 12c：看门狗假件（四条边各一个计数，见 `RecordingKeepAliveWatchdog` 的 KDoc）。 */
+    private val watchdog = RecordingKeepAliveWatchdog()
+
+    /** 阶段 12c：安全模式三态快照（控制器是它的**运行期**写入点）。 */
+    private val snapshot = SafeModeSnapshot()
+
     private val controller =
         ForegroundServiceController(
             eventSourceRegistry = registry,
@@ -69,6 +76,8 @@ class ForegroundServiceControllerTest {
             circuitBreaker = Lazy { breaker },
             notifier = notifier,
             daemonSupervisor = daemonSupervisor,
+            keepAliveWatchdog = watchdog,
+            safeModeSnapshot = snapshot,
             scope = controllerScope,
         )
 
@@ -272,6 +281,8 @@ class ForegroundServiceControllerTest {
                 circuitBreaker = Lazy { breaker },
                 notifier = localNotifier,
                 daemonSupervisor = RecordingDaemonSupervisor(),
+                keepAliveWatchdog = RecordingKeepAliveWatchdog(),
+                safeModeSnapshot = SafeModeSnapshot(),
                 scope = controllerScope,
             )
 
@@ -316,12 +327,156 @@ class ForegroundServiceControllerTest {
         }
 
     @Test
-    fun `health check is explicitly marked as not implemented`() {
-        // 裁定 ①：本阶段不实现健康检查。这两条是"设计已留、实现未做"的显式证据，
-        // 而不是让后续会话以为漏做了（真正的证据是真机日志里的 KEEPALIVE_HEALTH_TODO）。
+    fun `health check is armed rather than merely designed`() {
+        // 阶段 5 的裁定 ①（"只留端口与设计、不实现"）建在一个**错误的前提**上：
+        // 当时以为要 `androidx.work`，而它不在离线缓存。实际那份设计用的是
+        // `AlarmManager` 自续期 ⇒ 不需要任何新依赖。阶段 12c 落地，这条断言随之改为"已启用"。
         assertEquals(15 * 60 * 1000L, KeepAliveHealthCheck.CHECK_INTERVAL_MILLIS)
-        assertEquals("KEEPALIVE_HEALTH_TODO", KeepAliveHealthCheck.HEALTH_CHECK_TODO_MARKER)
+        assertEquals(30 * 1000L, KeepAliveHealthCheck.DEFER_INTERVAL_MILLIS, "判定输入不足时的补偿间隔")
+        assertEquals("KEEPALIVE_HEALTH_ARMED", KeepAliveHealthCheck.HEALTH_CHECK_ARMED_MARKER)
     }
+
+    // ------------------------------------------------------------ ★ 阶段 12c：安全护栏与看门狗
+
+    /**
+     * ★★ **本阶段第 ① 项的核心断言。**
+     *
+     * ## 它防的是什么
+     * `register()` 此前**无条件**调 `daemonSupervisor.start()`，而
+     * `DaemonSupervisorImpl.start()` 内部没有任何安全模式判断。走的路径是
+     * `START_STICKY`（系统重建服务）——**偶发**。加入 15 分钟一次的心跳看门狗后，
+     * 它会**周期性**走那条路：熔断期间服务若被杀，监管与事件源会被反复复活，
+     * 而"安全模式 = 全部停下来"正是熔断第 2 步刚做的事。
+     *
+     * 它不会真的绕过熔断（脚本执行前还有 `SafeModeDecision.shouldRun`），
+     * 但那层兜底是**第二层** —— 第一层必须干净。
+     */
+    @Test
+    fun `★ safe mode register does not start the daemon supervisor`() {
+        val safeBreaker = FakeControllerCircuitBreaker(safeMode = true, reason = TripReason.Manual)
+        val supervisor = RecordingDaemonSupervisor()
+        val safeModeController =
+            ForegroundServiceController(
+                eventSourceRegistry = FakeEventSourceRegistry(),
+                circuitBreaker = Lazy { safeBreaker },
+                notifier = FakeServiceNotifier(),
+                daemonSupervisor = supervisor,
+                keepAliveWatchdog = RecordingKeepAliveWatchdog(),
+                safeModeSnapshot = SafeModeSnapshot(),
+                scope = controllerScope,
+            )
+
+        safeModeController.register()
+
+        assertEquals(0, supervisor.startCalls, "★ 安全模式下不得启动常驻脚本监管（护栏）")
+        assertFalse(supervisor.running, "★ 监管必须真的没在跑，而不只是没计数")
+        assertTrue(
+            safeModeController.isRegistered,
+            "护栏只挡监管 —— 服务本身照常注册（否则事件源、通知、状态卡全都不会工作）",
+        )
+    }
+
+    @Test
+    fun `the safe mode gate is paired with the restore path`() {
+        // 与上一条构成对称：熔断期间不启动监管，**退出安全模式时必须把它拉回来**
+        // （`onSafeModeRestore` 里的 start，11e 补丁5 的既有行为）。
+        val safeBreaker = FakeControllerCircuitBreaker(safeMode = true, reason = TripReason.Manual)
+        val supervisor = RecordingDaemonSupervisor()
+        val safeModeController =
+            ForegroundServiceController(
+                eventSourceRegistry = FakeEventSourceRegistry(),
+                circuitBreaker = Lazy { safeBreaker },
+                notifier = FakeServiceNotifier(),
+                daemonSupervisor = supervisor,
+                keepAliveWatchdog = RecordingKeepAliveWatchdog(),
+                safeModeSnapshot = SafeModeSnapshot(),
+                scope = controllerScope,
+            )
+        safeModeController.register()
+        assertEquals(0, supervisor.startCalls)
+
+        safeModeController.onSafeModeRestore()
+
+        assertEquals(1, supervisor.startCalls, "退出安全模式必须重启监管，否则常驻脚本永远不回来")
+        assertTrue(supervisor.running)
+    }
+
+    @Test
+    fun `register arms the watchdog and every publish reports a heartbeat`() =
+        runTest(testDispatcher) {
+            controller.register()
+            testDispatcher.scheduler.runCurrent()
+
+            assertEquals(1, watchdog.ensureScheduledCalls, "服务起来就要确保下一次检查已被安排")
+            assertTrue(watchdog.heartbeatCalls >= 1, "设计要求的写入点是'每次状态变化'")
+
+            val afterRegister = watchdog.heartbeatCalls
+
+            // 一次真实的状态变化（事件源少了一个）⇒ 又是一次心跳
+            registry.changeSources(listOf("battery" to true, "power" to true, "wifi" to true))
+            testDispatcher.scheduler.runCurrent()
+
+            assertTrue(
+                watchdog.heartbeatCalls > afterRegister,
+                "状态变化会经过 publishState ⇒ 心跳必须跟着写（实际 $afterRegister → ${watchdog.heartbeatCalls}）",
+            )
+        }
+
+    @Test
+    fun `unregister tells the watchdog the service is gone`() =
+        runTest(testDispatcher) {
+            controller.register()
+            testDispatcher.scheduler.runCurrent()
+
+            controller.unregister()
+            testDispatcher.scheduler.runCurrent()
+
+            assertEquals(1, watchdog.stoppedCalls, "服务停止必须让看门狗知道（否则它以为服务还活着，永不尝试拉起）")
+        }
+
+    @Test
+    fun `a failing heartbeat cannot break the state publish`() =
+        runTest(testDispatcher) {
+            watchdog.heartbeatThrows = true
+
+            controller.register()
+            testDispatcher.scheduler.runCurrent()
+
+            // 心跳失败只是"看门狗少了一次报活"，绝不能让服务注册或通知投递跟着塌掉
+            assertTrue(controller.isRegistered)
+            assertTrue(notifier.updates.isNotEmpty(), "通知必须照常投出去")
+        }
+
+    @Test
+    fun `publishing a state refreshes the safe mode snapshot`() =
+        runTest(testDispatcher) {
+            val localSnapshot = SafeModeSnapshot()
+            val localController =
+                ForegroundServiceController(
+                    eventSourceRegistry = FakeEventSourceRegistry(),
+                    circuitBreaker = Lazy { breaker },
+                    notifier = FakeServiceNotifier(),
+                    daemonSupervisor = RecordingDaemonSupervisor(),
+                    keepAliveWatchdog = RecordingKeepAliveWatchdog(),
+                    safeModeSnapshot = localSnapshot,
+                    scope = controllerScope,
+                )
+            assertNull(localSnapshot.current, "注册之前是未知（三态里的第三档，不得当成'不在安全模式'）")
+
+            localController.register()
+            testDispatcher.scheduler.runCurrent()
+            assertEquals(false, localSnapshot.current)
+
+            breaker.safeModeFlow.value = true
+            breaker.reasonFlow.value = TripReason.Manual
+            testDispatcher.scheduler.runCurrent()
+
+            assertEquals(
+                true,
+                localSnapshot.current,
+                "运行期熔断必须跟着刷新 —— 否则看门狗会永久停在启动那一刻的结论上",
+            )
+        }
 
     @Test
     fun `idle state is reported before register so the bootstrap notification cannot lie`() {

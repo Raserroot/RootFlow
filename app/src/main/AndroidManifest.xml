@@ -119,9 +119,13 @@
         </receiver>
 
         <!-- 阶段 3c.2：闹钟触发（需求 §2.1 time / interval）。
-             两个 action 由 AlarmActions 常量与本文件共同约定（清单无法引用 Kotlin 常量，
-             故一致性由 AlarmFireReceiverTest 的"清单包含这两个 action"断言守护）。
-             PendingIntent 由 AndroidAlarmHandle 以显式 component 构造。 -->
+             三个 action 由 AlarmActions 常量与本文件共同约定（清单无法引用 Kotlin 常量，
+             故一致性由 AlarmFireReceiverTest 的"清单包含这三个 action"断言守护）。
+             PendingIntent 由 AndroidAlarmHandle 以显式 component 构造。
+
+             第三个是阶段 12c 的**保活心跳**（`com.rootflow.KEEPALIVE`）：它复用本接收器，
+             但 handler 里**不进 EventBus** —— 心跳是宿主内部机制，不是用户可见的系统事件
+             （若走 INTERVAL 域，用户的常驻脚本会每 15 分钟无端收到一条 interval）。 -->
         <receiver
             android:name=".service.receiver.AlarmFireReceiver"
             android:enabled="true"
@@ -129,6 +133,7 @@
             <intent-filter>
                 <action android:name="com.rootflow.TIME" />
                 <action android:name="com.rootflow.INTERVAL" />
+                <action android:name="com.rootflow.KEEPALIVE" />
             </intent-filter>
         </receiver>
 

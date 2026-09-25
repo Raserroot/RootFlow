@@ -1,10 +1,15 @@
 package com.rootflow.data.di
 
 import com.rootflow.data.event.EventSourceRegistry
+import com.rootflow.data.event.SafeModeSnapshot
+import com.rootflow.data.service.AndroidKeepAliveWaker
 import com.rootflow.data.service.ForegroundServiceController
+import com.rootflow.data.service.KeepAliveWatchdogImpl
 import com.rootflow.data.service.ServiceNotifierImpl
 import com.rootflow.domain.event.CircuitBreaker
 import com.rootflow.domain.event.DaemonSupervisor
+import com.rootflow.domain.service.KeepAliveWaker
+import com.rootflow.domain.service.KeepAliveWatchdog
 import com.rootflow.domain.service.SafeModeAlertSink
 import com.rootflow.domain.service.ServiceNotifier
 import com.rootflow.domain.service.ServiceStateProvider
@@ -26,6 +31,9 @@ import javax.inject.Singleton
  * | [ServiceNotifier] | [ServiceNotifierImpl] | `@Binds` |
  * | [SafeModeAlertSink] | [ForegroundServiceController] | `@Binds`（**防环的关键**） |
  * | [ServiceStateProvider] | [ForegroundServiceController] | `@Binds`（阶段 6b：主页数据源） |
+ * | [KeepAliveWatchdog] | [KeepAliveWatchdogImpl] | `@Binds`（阶段 12c） |
+ * | [KeepAliveWaker] | [AndroidKeepAliveWaker] | `@Binds`（阶段 12c） |
+ * | `SafeModeSnapshot` | 自身 | `@Inject` 构造（无依赖，**不需要**绑定） |
  * | [ForegroundServiceController] | 自身 | `@Provides`（有默认参数，见下） |
  *
  * ## ★ 为什么 [SafeModeAlertSink] 要绑到控制器（依赖方向图）
@@ -97,12 +105,42 @@ abstract class ServiceModule {
     @Singleton
     abstract fun bindServiceStateProvider(impl: ForegroundServiceController): ServiceStateProvider
 
+    /**
+     * 保活看门狗（阶段 12c）。
+     *
+     * 两条绑定都是"接口 + `@Inject` 构造实现"的常规形态：两个实现类的构造参数全部可注入
+     * （`AlarmHandle` / `KeepAliveWaker` / `SafeModeSnapshot` / `ServiceNotifier`），
+     * 因此不需要 `@Provides` 转发 —— 少写一个转发就少一处会漂移的绑定
+     * （3c.1/3d/4 反复踩过"Kotlin 默认参数对 Dagger 不可见"的坑型）。
+     */
+    @Binds
+    @Singleton
+    abstract fun bindKeepAliveWatchdog(impl: KeepAliveWatchdogImpl): KeepAliveWatchdog
+
+    /**
+     * 自愈动作的 Android 实现（阶段 12c）。
+     *
+     * ## 它为什么不能直接注入 `ForegroundServiceController`
+     * 看门狗的降级路径要"重投一条提醒通知"，而通知端口只有
+     * `ServiceNotifier`（`ServiceNotificationImpl`）—— 那条路**不经过控制器**。
+     * 若为了拿 `currentNotification()` 而注入控制器，就会成环：
+     * `ForegroundServiceController → KeepAliveWatchdog → KeepAliveWaker → ForegroundServiceController`。
+     * **本模块的绑定图里不应出现第二条通往回头的边**（第一条是断环用的 `Lazy<CircuitBreaker>`）。
+     */
+    @Binds
+    @Singleton
+    abstract fun bindKeepAliveWaker(impl: AndroidKeepAliveWaker): KeepAliveWaker
+
     companion object {
         /**
          * 前台服务控制器（生命周期的唯一编排者）。
          *
          * `circuitBreaker` **必须是 `Lazy`**：那是本模块唯一的断环点，见类 KDoc。
          * 控制器在 `register()` 里第一次 `get()` 它。
+         *
+         * 阶段 12c 追加的两个依赖（`keepAliveWatchdog` / `safeModeSnapshot`）**不会引入环**：
+         * 看门狗只依赖 `AlarmHandle` / `KeepAliveWaker` / `SafeModeSnapshot`，
+         * 其中 `KeepAliveWaker` 走的是**通知端口**而不是控制器（理由见上面的 KDoc）。
          */
         @Provides
         @Singleton
@@ -111,6 +149,8 @@ abstract class ServiceModule {
             circuitBreaker: Lazy<CircuitBreaker>,
             notifier: ServiceNotifier,
             daemonSupervisor: DaemonSupervisor,
+            keepAliveWatchdog: KeepAliveWatchdog,
+            safeModeSnapshot: SafeModeSnapshot,
             @EventDispatcherScope scope: CoroutineScope,
         ): ForegroundServiceController =
             ForegroundServiceController(
@@ -118,6 +158,8 @@ abstract class ServiceModule {
                 circuitBreaker = circuitBreaker,
                 notifier = notifier,
                 daemonSupervisor = daemonSupervisor,
+                keepAliveWatchdog = keepAliveWatchdog,
+                safeModeSnapshot = safeModeSnapshot,
                 scope = scope,
             )
 

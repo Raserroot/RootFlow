@@ -10,7 +10,9 @@ import com.rootflow.data.event.BootloopGuard
 import com.rootflow.data.event.CircuitBreakerImpl
 import com.rootflow.data.event.EventBusHolder
 import com.rootflow.data.event.EventSourceRegistry
+import com.rootflow.data.event.SafeModeSnapshot
 import com.rootflow.data.event.TriggerScheduleProvider
+import com.rootflow.data.service.KeepAliveHolder
 import com.rootflow.domain.event.BootMarkerStore
 import com.rootflow.domain.event.BootSemantics
 import com.rootflow.domain.event.CircuitBreaker
@@ -22,6 +24,7 @@ import com.rootflow.domain.event.PermissionStatusProvider
 import com.rootflow.domain.event.TriggerDispatcher
 import com.rootflow.domain.model.SystemEvent
 import com.rootflow.domain.repository.TriggerRepository
+import com.rootflow.domain.service.KeepAliveWatchdog
 import com.rootflow.runtime.LogLine
 import com.rootflow.runtime.LogStream
 import com.rootflow.runtime.ProcessGroupManager
@@ -178,6 +181,25 @@ class RootFlowApp : Application() {
     lateinit var triggerRepository: TriggerRepository
 
     /**
+     * 阶段 12c：保活看门狗（与前台服务互相知道对方，见 `KeepAliveService` 的 KDoc）。
+     *
+     * 本类对它的全部义务只有一件：**装进 [KeepAliveHolder]** ——
+     * 心跳由闹钟广播送达，而接收器无法构造注入。
+     * 安装必须**早于任何广播可能到达**（与 [EventBusHolder.install] 同一条理由）。
+     */
+    @Inject
+    lateinit var keepAliveWatchdog: KeepAliveWatchdog
+
+    /**
+     * 阶段 12c：安全模式的三态快照（见 `SafeModeSnapshot` 的 KDoc）。
+     *
+     * 本类负责**第一个写入点**：启动链里 `restoreStateFromDisk()` 跑完之后，
+     * 把那个确定结论交给它。第二个写入点在 `ForegroundServiceController` 的状态发布里。
+     */
+    @Inject
+    lateinit var safeModeSnapshot: SafeModeSnapshot
+
+    /**
      * 诊断闸门的一次性作用域。
      *
      * ## ★ 它**不**承载生产逻辑（阶段 6e 收敛后的形态）
@@ -282,6 +304,10 @@ class RootFlowApp : Application() {
         // ③ D9 的 boot 补发放在**②之后、且在所有启动期作业之后**：先订阅再补发
         // ④ 闹钟对账放在安全模式恢复之后：它要读 Room，且失败不应影响 boot 语义
         EventBusHolder.install(eventBus)
+        // ★ 阶段 12c：看门狗同理必须在**任何广播可能到达之前**装好。
+        //   心跳闹钟可能在本进程刚被唤起时就到（那正是它被设计出来的场景）
+        //   ⇒ 晚装一步就是"这次心跳被丢弃"（接收器只记一行警告）。
+        KeepAliveHolder.install(keepAliveWatchdog)
         triggerDispatcher.start()
 
         // 阶段 3d（D9）：App 启动补 boot 语义 —— 本设备上唯一可靠的 boot 路径
@@ -428,6 +454,14 @@ class RootFlowApp : Application() {
                 "external=${external?.reasonKey ?: "-"} safeMode=${circuitBreaker.safeMode.value} " +
                 "tripReason=${circuitBreaker.tripReason.value?.reasonKey ?: "-"}",
         )
+
+        // ★ 阶段 12c：把"确定的"安全模式结论交给看门狗快照（**三态**，见 SafeModeSnapshot 的 KDoc）。
+        //   为什么必须在这里写：心跳广播会冷启动进程，而看门狗判定时本方法可能还没跑完 ——
+        //   快照留在 `null` 时它选择"不拉服务、30 秒后再看一次"（保守），
+        //   而写完之后它才可能正确地自愈。**这是"未知"与"确认不在熔断中"的分界线。**
+        //   运行期变化由 `ForegroundServiceController` 的每次状态发布刷新（第二个写入点）。
+        safeModeSnapshot.update(circuitBreaker.safeMode.value)
+        Log.i(TAG, "KEEPALIVE_SAFE_MODE_SNAPSHOT safeMode=${circuitBreaker.safeMode.value}")
     }
 
     /**

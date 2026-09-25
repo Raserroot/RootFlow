@@ -15,6 +15,7 @@ import androidx.compose.foundation.layout.safeDrawing
 import androidx.compose.foundation.layout.windowInsetsPadding
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.runtime.Composable
+import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.remember
 import androidx.compose.runtime.setValue
@@ -29,6 +30,8 @@ import androidx.lifecycle.viewmodel.compose.viewModel
 import com.rootflow.domain.settings.BlurPolicy
 import com.rootflow.domain.settings.RootFlowSettings
 import com.rootflow.ui.component.FloatingNavBar
+import com.rootflow.ui.consent.KeepAliveConsentLoading
+import com.rootflow.ui.consent.KeepAliveConsentScreen
 import com.rootflow.ui.home.HomeScreen
 import com.rootflow.ui.scripts.ScriptsTab
 import com.rootflow.ui.settings.SettingsScreen
@@ -39,8 +42,20 @@ import dev.chrisbanes.haze.rememberHazeState
 /**
  * 应用根 Composable（阶段 6a 起：脚手架 + 悬浮胶囊底栏 + 三个 Tab）。
  *
+ * ## ★ 阶段 12c：它是**首启知情同意门**的所在（三态分流）
+ * ```
+ * settings.keepAliveConsent == null  → 加载态（既不进主界面，也不判为拒绝）
+ *                            == false → 全屏声明页（返回键被显式拦下 ⇒ 视为不同意）
+ *                            == true  → 主界面（并让 Activity 去拉服务）
+ * ```
+ * 三态而不是布尔的理由见 `RootFlowSettings.KeepAliveConsent`；
+ * "为什么这一档必须存在"见 `KeepAliveConsentLoading` 的 KDoc。
+ *
+ * **分流放在主题之内**：加载态与声明页都必须用正确的配色渲染，
+ * 否则已同意深色主题的用户会先看到一屏浅色再跳色。
+ *
  * ## 主题在这里落地，而不是在 `MainActivity`
- * `MainActivity` 只负责阶段 5 立下的三件事（拉起前台服务、申请通知权限、`setContent`）。
+ * `MainActivity` 只负责系统交互（拉起前台服务、申请通知权限、`setContent`）。
  * 主题读取属 **UI 逻辑**，因此放在本文件：[RootFlowTheme] 包住整个界面，
  * 设置值由 [MainViewModel] 提供。这样 `MainActivity` 不必持有任何与"长什么样"有关的知识。
  *
@@ -49,27 +64,25 @@ import dev.chrisbanes.haze.rememberHazeState
  * Box（根，铺满窗口，自己铺背景）
  *  ├─ ① 内容层（hazeSource + safeDrawing inset，**不再让位底栏**）
  *  ├─ ② 底部渐隐 scrim（保留）
- *  ├─ ③ 玻璃层（只占胶囊位置；内容是"被上移过的同一份页面内容"）
- *  └─ ④ FloatingNavBar（胶囊行 + 底面 + 描边；Tier 1/2 时**不调 hazeEffect**）
+ *  ├─ ③ 玻璃层（**阶段 11e 已整个移除**）
+ *  └─ ④ FloatingNavBar（胶囊行 + 底面 + 描边）
  * ```
  *
  * ### 6a 的让位为什么必须改（Phase 1a 的结构性发现）
  * 6a 起内容层整体带 `.padding(bottom = NavBarReservedSpace)`（88dp）
  * ⇒ **内容永远滚不到胶囊背后**，胶囊背后只有根 Box 的背景色。
- * 后果：需求 §6 的毛玻璃与阶段 7 的折射**都永远看不到效果**
- * （折射纯色与"一块不透明色块"没有区别）。
+ * 后果：需求 §6 的毛玻璃**永远看不到效果**。
  *
  * ### 改法与理由（用户 2026-09-20 裁定：选 A，不选 C）
  * - **内容层去掉让位**，改由**各 Tab 的滚动容器自己加底部留白**
  *   （`NavBarReservedSpace`，消费者变成 `HomeScreen` / `ScriptListScreen` / `SettingsScreen`）：
- *   内容因此能从胶囊下方滚过（玻璃有东西可折射），而「最后一项静止时不被胶囊压住」
+ *   内容因此能从胶囊下方滚过（毛玻璃有东西可采样），而「最后一项静止时不被胶囊压住」
  *   这条可用性**仍然成立** —— 滚动容器的底部留白正是干这个的。
  * - **不选 C**（靠底栏自己的 scrim 遮住）：C 会让最后一项**永久**被胶囊遮挡，是可用性倒退。
  *
  * ## Haze 的 source 仍然挂在内容层（**不要挪到底栏里**）
  * Haze 的语义是「source 节点捕获自己身后的内容，effect 节点采样它」。底栏位于屏幕最下方，
  * 它**身后只有 App 自己的内容**，因此 source 必须挂在**页面内容那一层**。
- * Tier 2/3 的降级路径与 Tier 1 的离屏捕获**共用这一处**（`STAGE7-PLAN.md §1` 问题 2）。
  *
  * ## ★ 为什么是 `viewModel()` 而不是 `hiltViewModel()`（**§1.1 报告 2**）
  * 方案里写的是 `androidx.hilt.navigation.compose.hiltViewModel()`，但
@@ -78,25 +91,59 @@ import dev.chrisbanes.haze.rememberHazeState
  * 返回 `DefaultViewModelFactories.getActivityFactory(...)`，也就是说 **Activity 的默认
  * ViewModel 工厂本身就是 Hilt 工厂**，因此 `androidx.lifecycle.viewmodel.compose.viewModel()`
  * （由 `lifecycle-viewmodel-compose` 提供，**在缓存中**）能正常构造 `@HiltViewModel` 类。
+ *
+ * @param onKeepAliveGranted 用户已同意（本次启动前同意过、或刚刚点了同意）之后要做的**系统交互**：
+ *   拉起前台服务 + 申请通知权限。**刻意不由本层执行** —— 那两件事是 Android 生命周期动作，
+ *   属于 `MainActivity`（阶段 6a 立下的纪律：权限/系统交互不搬进 Composable）。
+ *   本层只负责"在正确的时机发出信号"。
+ * @param onKeepAliveDeclined 用户点了「不同意并退出」或按了返回键（由 Activity `finish()`）
  */
 @Composable
 fun RootFlowApp(
+    onKeepAliveGranted: () -> Unit,
+    onKeepAliveDeclined: () -> Unit,
     modifier: Modifier = Modifier,
     viewModel: MainViewModel = viewModel(),
 ) {
     val settings by viewModel.settings.collectAsStateWithLifecycle()
+    val consentWriteFailed by viewModel.consentWriteFailed.collectAsStateWithLifecycle()
     val currentTab by viewModel.currentTab.collectAsStateWithLifecycle()
 
     RootFlowTheme(
         themeMode = settings.themeMode,
         dynamicColor = settings.dynamicColor,
     ) {
-        RootFlowMain(
-            currentTab = currentTab,
-            settings = settings,
-            onSelectTab = viewModel::select,
-            modifier = modifier,
-        )
+        when (settings.keepAliveConsent) {
+            // 还没读到磁盘：停在加载态（**不得**判为拒绝，也不得直接放行 —— 见加载态的 KDoc）
+            null -> KeepAliveConsentLoading(modifier = modifier)
+
+            // 未同意：全屏声明页。返回键与「不同意并退出」走同一条路径
+            false ->
+                KeepAliveConsentScreen(
+                    writeFailed = consentWriteFailed,
+                    onAccept = viewModel::acceptKeepAliveConsent,
+                    onDecline = {
+                        viewModel.declineKeepAliveConsent()
+                        onKeepAliveDeclined()
+                    },
+                    modifier = modifier,
+                )
+
+            // 已同意：主界面，并把"可以拉服务了"这件事交给 Activity
+            true -> {
+                // ★ 这个 `LaunchedEffect` 是本阶段唯一一处"系统动作的触发时机"：
+                //   它只在**读到同意之后**才跑，此时 Activity 必然已在前台
+                //   （Composable 不是在后台被组合的），因此不撞 Android 12+ 的
+                //   "后台启动前台服务"限制。key 用 `Unit`：同一次组合内只跑一次。
+                LaunchedEffect(Unit) { onKeepAliveGranted() }
+                RootFlowMain(
+                    currentTab = currentTab,
+                    settings = settings,
+                    onSelectTab = viewModel::select,
+                    modifier = modifier,
+                )
+            }
+        }
     }
 }
 

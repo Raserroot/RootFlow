@@ -97,50 +97,74 @@ interface SafeModeAlertSink {
 }
 
 /**
- * 保活健康检查（阶段 5，**本阶段只留设计、不实现**）。
+ * 保活健康检查（阶段 5 立的契约，**阶段 12c 落地**）。
  *
- * ## 为什么本阶段不实现（已批准的裁定 ①）
+ * ## ★ 阶段 5 为什么不实现（当时的裁定 ①）与它为什么不成立
  * 需求 §7 原文是「保活：前台服务 + `START_STICKY` + **可选** WorkManager 健康检查 + 电池白名单引导」，
  * 而 `androidx.work` **不在本工作区的离线缓存中**（构建为 `--offline`）：
  * ```
  * caches\modules-2\files-2.1\androidx.work\   → 目录不存在
  * 递归查找 work-runtime*                       → 0 命中
  * ```
- * 按 `AGENT_PROTOCOL.md §1.1`，这属"计划新增的依赖在离线缓存中不存在"，
- * **必须动手前先报**。已报，裁定为 **B：不做实现，只留端口与设计**。
+ * 当时据此裁定为「**只留端口与设计，不实现**」，并在真机日志里打一行
+ * `KEEPALIVE_HEALTH_TODO … implemented=false`。
  *
- * ## 设计（将来启用时的形态，勿凭记忆重造）
+ * **那个裁定的前提是错的**：本端口的设计表里用的是
+ * `AlarmManager` 一次性闹钟自续期（复用既有的 `AlarmFireReceiver` 与一个新的 action 域），
+ * **根本不需要 WorkManager**。也就是说这不是"依赖缺失导致的让步"，
+ * 而是"有能力落地却没落地"——阶段 5 的收尾记录因此把代价记成了"已知限制"。
+ * **阶段 12c 把这一条关闭**（用户明确要求"必须做保活"）。
+ *
+ * ## 落地形态（= 设计表，逐项未改）
  * | 项 | 值 | 理由 |
  * |---|---|---|
- * | 触发方式 | `AlarmManager` 一次性闹钟，自续期 | 复用既有 `com.rootflow.INTERVAL` 域与 `AlarmFireReceiver`，不引新依赖 |
- * | 间隔 | 15 分钟量级 | 更密无意义（前台服务被杀不会被"探测"救活），更疏则用户长时间无感 |
- * | 判据 | 服务"心跳"超期未续 | 心跳由 `ForegroundServiceController` 每次状态变化时写入 |
+ * | 触发方式 | `AlarmManager` 一次性闹钟，**自续期** | 复用既有闹钟基础设施，**不引新依赖** |
+ * | 间隔 | [CHECK_INTERVAL_MILLIS]（15 分钟量级） | 更密无意义（服务被杀不会被"探测"救活），更疏则用户长时间无感 |
+ * | 判据 | 服务"心跳"（`ForegroundServiceController` 每次状态变化写入） | 见 `KeepAliveWatchdog` 的 KDoc（判据在落地时被细化，如实登记在那里） |
  * | 时钟 | **必须注入** | 纯 JVM 单测下 `SystemClock` 未实现（`not implemented`），且 `mockkStatic` 会污染 JVM 全局 |
- * | 动作 | 重投常驻通知 +（可选）`startForegroundService` | 只做"提醒与自愈"，**不做任何黑产保活** |
+ * | 动作 | 重投常驻通知 + `startForegroundService` | 只做"提醒与自愈"，**不做任何黑产保活** |
  *
- * ## ★ 本阶段不实现的代价（必须如实登记为已知限制）
- * **服务彻底死掉时，本应用无法自我发现**：只剩 `START_STICKY`（由系统决定是否拉起）
- * 与用户可见的常驻通知（通知消失＝服务没了，但这要用户自己看到）。
- * 这不是"漏做"，而是离线缓存约束下"不引新依赖"的取舍；
- * 开工前已报，并经用户裁定为"只留端口与设计"。
+ * ## 保留的纪律（**不因落地而放宽**）
+ * 不做双进程互拉、1 像素 Activity、无声音乐，也不申请电池白名单的自动放行。
+ * 落地后的看门狗动作只有两件：**重投常驻通知**、**必要时 `startForegroundService`**。
+ * 首启的知情同意声明（`ui/consent/`）正是这条纪律的配套。
  */
 interface KeepAliveHealthCheck {
     /**
-     * 下一次健康检查应有的时刻（单调时钟毫秒）。
+     * 下一次健康检查应有的时刻（与 `nowMillis` **同一时钟**）。
      *
-     * 本阶段**无实现**（唯一的"实现"是打一行 [HEALTH_CHECK_TODO_MARKER] 日志），
-     * 因此不要在任何生产路径上调用它。
+     * 默认实现即"从当前时刻起算一个间隔"，自续期由看门狗在每次检查处理完之后调用。
+     *
+     * @param nowMillis 当前时刻（单调时钟读数；见接口 KDoc 的"时钟"一行）
      */
-    fun nextCheckAt(nowMillis: Long): Long
+    fun nextCheckAt(nowMillis: Long): Long = nowMillis + CHECK_INTERVAL_MILLIS
 
     companion object {
         /** 健康检查间隔（15 分钟；见接口 KDoc 的设计表）。 */
         const val CHECK_INTERVAL_MILLIS: Long = 15 * 60 * 1000L
 
         /**
-         * 真机判读用的显式标记：证明"设计已留、实现未做"是**有意为之**，
-         * 而不是漏接。真机日志里应当且只应当出现一次。
+         * 判定输入不足时的**补偿间隔**（30 秒）。
+         *
+         * ## 什么时候用
+         * 心跳广播可能**冷启动进程**，而安全模式的恢复发生在 `Application.onCreate`
+         * 的异步启动链里。此时 `safeMode` 是"还不知道"（三态的第三档）⇒ 判定为
+         * [`KeepAliveAction.DEFER`][com.rootflow.domain.service.KeepAliveAction.DEFER]，
+         * 30 秒后重排一次再判。**代价是"这次不拉"而不是"不拉了"**。
+         *
+         * ## 为什么不用"未知就当不在安全模式"
+         * 那正是本阶段 ① 要钉死的路：熔断期间看门狗把服务拉起来 ⇒ 常驻监管与事件源复活。
          */
-        const val HEALTH_CHECK_TODO_MARKER: String = "KEEPALIVE_HEALTH_TODO"
+        const val DEFER_INTERVAL_MILLIS: Long = 30 * 1000L
+
+        /**
+         * 真机判读用的显式标记：证明健康检查**已经落地并在跑**。
+         *
+         * 与阶段 5 的 `KEEPALIVE_HEALTH_TODO`（"设计已留、实现未做"）互为对照 ——
+         * 那个常量随本期落地**一并删除**（留一个永不再出现的标记是死代码）。
+         * 真机判据：`register` 之后应且只应出现一次
+         * `KEEPALIVE_HEALTH_ARMED … implemented=true`。
+         */
+        const val HEALTH_CHECK_ARMED_MARKER: String = "KEEPALIVE_HEALTH_ARMED"
     }
 }

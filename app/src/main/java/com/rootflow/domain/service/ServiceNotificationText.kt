@@ -43,6 +43,25 @@ object ServiceNotificationText {
     /** 通知权限被拒时的正文后缀（不得谎报"监听正常"）。 */
     const val NOTIFICATIONS_BLOCKED_SUFFIX: String = " · 通知被系统拒绝，服务仍在运行"
 
+    /** 看门狗发现服务不在、且**系统拒绝了后台重启**时的标题（阶段 12c）。 */
+    const val TITLE_SERVICE_DOWN: String = "RootFlow 服务已停止"
+
+    /**
+     * 服务未能自动恢复时的正文（阶段 12c）。
+     *
+     * ## 为什么必须如实说"系统拒绝"而不是"正在恢复"
+     * Android 14+ 起，**非精确闹钟**在后台拉起前台服务会被系统拒绝
+     * （`ForegroundServiceStartNotAllowedException`，见 `AndroidKeepAliveWaker` 的 KDoc）。
+     * 那条路径上"自动恢复"根本没发生 —— 若正文写成"正在恢复中"，用户会以为不用管，
+     * 而实际上脚本与事件监听**一直没在跑**。本仓库的文案纪律是"不得谎报已恢复"
+     * （与 [NOTIFICATIONS_BLOCKED_SUFFIX] 同一条）。
+     *
+     * ## 为什么不写成"点此恢复"这种祈使句
+     * 通知**已经**带 `openAppIntent()`（点击即打开 App），用户点一下就是最自然的恢复动作；
+     * 正文只说"打开 App 可恢复"，把动作留给通知本身的交互。
+     */
+    const val SERVICE_DOWN_TEXT: String = "系统拒绝了后台自动恢复，打开 App 即可重新启动监听"
+
     /**
      * 常驻通知的正文。
      *
@@ -106,4 +125,28 @@ object ServiceNotificationText {
     /** 真机判读用的单行摘要（日志与通知共用同一份取值逻辑，避免两处漂移）。 */
     fun describe(model: ServiceNotificationModel): String =
         "channel=${model.channelId} alert=${model.alert} title=[${model.title}]"
+
+    /**
+     * 服务掉线的**提醒**通知模型（阶段 12c，看门狗的降级路径）。
+     *
+     * ## 为什么复用常驻渠道与常驻 id，而不是新开一条通知类型
+     * `ServiceNotifier.update(model)` 走的是常驻通知 id（`ServiceNotificationIds.FOREGROUND`）
+     * ⇒ **服务一旦恢复，下一次 `update()` 就会把这条覆盖掉**，不需要任何"撤销"逻辑。
+     * 若给它单独一个 id，就得再加一处"什么时候撤"的判定，而漏判的表现是
+     * "服务早就好了，通知栏还写着已停止"（本仓库反复禁止的形态）。
+     *
+     * 代价（如实登记）：常驻渠道是 `IMPORTANCE_LOW` 且静默 ⇒ 这条提醒**不会响**，
+     * 只在通知栏里挂着。对"服务掉线"这个级别的事件这个强度是合适的 ——
+     * 它同时是**不可滑除**的（`ongoing = true`），用户下拉通知栏一定会看到。
+     *
+     * @param notificationsGranted `POST_NOTIFICATIONS` 是否已授予；未授予时正文要如实说明
+     *   "你看不到这条通知"（否则这就成了一条**发不出去且无人知道**的提醒）
+     */
+    fun serviceDown(notificationsGranted: Boolean = true): ServiceNotificationModel =
+        ServiceNotificationModel(
+            channelId = ServiceChannels.FOREGROUND,
+            title = TITLE_SERVICE_DOWN,
+            text = if (notificationsGranted) SERVICE_DOWN_TEXT else SERVICE_DOWN_TEXT + NOTIFICATIONS_BLOCKED_SUFFIX,
+            alert = false,
+        )
 }

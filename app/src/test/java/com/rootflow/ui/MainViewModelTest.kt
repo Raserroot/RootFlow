@@ -1,9 +1,12 @@
 package com.rootflow.ui
 
+import android.util.Log
 import app.cash.turbine.test
 import com.rootflow.domain.settings.RootFlowSettings
 import com.rootflow.domain.settings.SettingsRepository
 import com.rootflow.domain.settings.ThemeMode
+import io.mockk.every
+import io.mockk.mockkStatic
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.test.runTest
@@ -28,8 +31,25 @@ import org.junit.jupiter.api.Test
  *    这条断言就是那个不变量的护栏
  * 2. **越界下标不崩**：恢复路径传进来的下标可能越界（Tab 增删 / 顺序调整），
  *    必须回落默认值而不是抛 `ArrayIndexOutOfBoundsException`
+ *
+ * ## ★ 必须自己打桩 `android.util.Log`（2026-09-25 补，勿删）
+ * KDoc 上一段原先写着"`android.util.Log` 在纯 JVM 下是 no-op stub，可安全调用" ——
+ * **那句话是错的**：本项目的单测没有开 `returnDefaultValues`（`AGENT_PROTOCOL.md §5.10`），
+ * 而 `MainViewModel.applyTab` 每次切 Tab 都会 `Log.i`。
+ *
+ * 它此前能跑过，是因为**别的测试类**（字母序在前的那些）已经装了静态桩 ⇒
+ * 本类的成败取决于**执行顺序**：单独跑（或与其它未打桩的类一起跑）必炸。
+ * 同一形态在 11e 补丁5（`ForegroundServiceControllerTest`）与本次的
+ * `SettingsRepositoryTest` / `EventSourceLifecycleOwnershipTest` 上已经出现过四次，
+ * 因此这一处也一并补上 —— **不要**再去依赖"别的类会装桩"。
  */
 class MainViewModelTest {
+    init {
+        mockkStatic(Log::class)
+        every { Log.i(any(), any()) } returns 0
+        every { Log.w(any(), any<String>()) } returns 0
+    }
+
     @Test
     @DisplayName("默认落在主页")
     fun `starts on the default tab`() =
@@ -153,6 +173,11 @@ class MainViewModelTest {
         /** 阶段 6d 新增的接口方法：主界面用例不涉及保留天数，如实写入即可。 */
         override suspend fun setLogRetentionDays(days: Int) {
             state.value = state.value.copy(logRetentionDays = days)
+        }
+
+        /** 保活同意（本文件用例不涉及同意门，如实写入即可）。 */
+        override suspend fun setKeepAliveConsent(consented: Boolean) {
+            state.value = state.value.copy(keepAliveConsent = consented)
         }
 
         fun emit(settings: RootFlowSettings) {

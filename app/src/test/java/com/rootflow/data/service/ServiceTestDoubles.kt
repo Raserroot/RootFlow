@@ -6,6 +6,8 @@ import com.rootflow.domain.event.EventSourceState
 import com.rootflow.domain.event.EventSourceStatus
 import com.rootflow.domain.event.RestoreMode
 import com.rootflow.domain.event.TripReason
+import com.rootflow.domain.service.KeepAliveVerdict
+import com.rootflow.domain.service.KeepAliveWatchdog
 import com.rootflow.domain.service.ServiceChannels
 import com.rootflow.domain.service.ServiceNotificationModel
 import com.rootflow.domain.service.ServiceNotifier
@@ -185,3 +187,54 @@ internal class FakeControllerCircuitBreaker(
 
 /** 期望的常驻渠道 id（避免用例里到处写字符串字面量）。 */
 internal val foregroundChannel: String = ServiceChannels.FOREGROUND
+
+/**
+ * 记录型看门狗假件（阶段 12c）。
+ *
+ * ## 为什么是五个计数而不是"调用与否"
+ * 控制器与看门狗之间有四条边（排闹钟 / 心跳 / 服务停止 / 撤销），
+ * 而它们**语义完全不同**：把 `onServiceStopped` 写成 `onServiceHeartbeat` 时，
+ * 只断言"调用过一次"会漏掉这个错误，而它的后果是**看门狗永远以为服务活着**（自愈永久失效）。
+ * 计数分开记，每条边各有一个可判据的数字。
+ *
+ * ## `onHeartbeat` 刻意不参与
+ * 那个方向（看门狗 → 服务）根本不经过控制器 —— 它走
+ * `AlarmFireReceiver` → `KeepAliveHolder`。若哪天控制器开始调它，
+ * 这里会抛 [NotImplementedError] 把它炸出来（与 `FakeControllerCircuitBreaker` 同一手法）。
+ */
+internal class RecordingKeepAliveWatchdog : KeepAliveWatchdog {
+    var ensureScheduledCalls: Int = 0
+        private set
+
+    var cancelCalls: Int = 0
+        private set
+
+    var heartbeatCalls: Int = 0
+        private set
+
+    var stoppedCalls: Int = 0
+        private set
+
+    /** 置 `true` 时 [onServiceHeartbeat] 抛异常（覆盖"心跳失败不得带走发布"）。 */
+    var heartbeatThrows: Boolean = false
+
+    override fun ensureScheduled() {
+        ensureScheduledCalls++
+    }
+
+    override fun cancel() {
+        cancelCalls++
+    }
+
+    override fun onServiceHeartbeat() {
+        heartbeatCalls++
+        if (heartbeatThrows) throw IllegalStateException("heartbeat boom")
+    }
+
+    override fun onServiceStopped() {
+        stoppedCalls++
+    }
+
+    override fun onHeartbeat(): KeepAliveVerdict =
+        throw NotImplementedError("the receiver drives onHeartbeat, not the controller")
+}

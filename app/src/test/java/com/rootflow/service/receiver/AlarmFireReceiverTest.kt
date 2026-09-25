@@ -3,13 +3,19 @@ package com.rootflow.service.receiver
 import android.util.Log
 import com.rootflow.data.event.EventBusHolder
 import com.rootflow.data.event.RecordingEventBus
+import com.rootflow.data.service.KeepAliveHolder
 import com.rootflow.domain.model.SystemEvent
+import com.rootflow.domain.service.KeepAliveAction
+import com.rootflow.domain.service.KeepAliveInput
+import com.rootflow.domain.service.KeepAliveVerdict
+import com.rootflow.domain.service.KeepAliveWatchdog
 import io.mockk.every
 import io.mockk.mockkStatic
 import org.junit.jupiter.api.AfterEach
 import org.junit.jupiter.api.Assertions.assertEquals
 import org.junit.jupiter.api.Assertions.assertTrue
 import org.junit.jupiter.api.Assumptions.assumeTrue
+import org.junit.jupiter.api.DisplayName
 import org.junit.jupiter.api.Test
 import java.io.File
 
@@ -32,6 +38,9 @@ class AlarmFireReceiverTest {
     @AfterEach
     fun tearDown() {
         EventBusHolder.clear()
+        // 阶段 12c：心跳持有者与总线持有者同款——用例之间必须隔离，
+        // 否则"上一个用例装好的看门狗"会让本用例的断言在错误的世界上成立。
+        KeepAliveHolder.clear()
     }
 
     @Test
@@ -97,24 +106,54 @@ class AlarmFireReceiverTest {
         // 写入侧（AlarmEventSource 经 AlarmActions 构造 PendingIntent）与接收侧必须是同一对字面量
         assertEquals("com.rootflow.TIME", AlarmActions.TIME)
         assertEquals("com.rootflow.INTERVAL", AlarmActions.INTERVAL)
+        assertEquals("com.rootflow.KEEPALIVE", AlarmActions.KEEPALIVE)
+    }
+
+    // ------------------------------------------------------------ ★ 阶段 12c：保活心跳
+
+    @Test
+    @DisplayName("★ 心跳交给看门狗，**不进总线**（它是宿主机制，不是系统事件）")
+    fun `the keep alive action goes to the watchdog and never to the bus`() {
+        installLogStub()
+        val bus = RecordingEventBus()
+        EventBusHolder.install(bus)
+        val watchdog = HeartbeatWatchdog()
+        KeepAliveHolder.install(watchdog)
+
+        AlarmFireReceiver().handleAction(AlarmActions.KEEPALIVE)
+
+        assertEquals(1, watchdog.heartbeats, "心跳必须交给看门狗")
+        assertTrue(
+            bus.sent.isEmpty(),
+            "心跳**不得**进总线：否则用户的常驻脚本每 15 分钟会无端收到一条 interval 事件：${bus.sent}",
+        )
     }
 
     @Test
-    fun `the manifest declares both alarm actions`() {
+    @DisplayName("心跳到达但看门狗还未装好：记警告、不崩")
+    fun `a heartbeat without a watchdog does not crash`() {
+        installLogStub()
+
+        // 刻意不 install：那说明 App 还没完成 DI 装配
+        AlarmFireReceiver().handleAction(AlarmActions.KEEPALIVE)
+
+        assertTrue(true)
+    }
+
+    @Test
+    fun `the manifest declares all alarm actions`() {
         val manifest = readManifest()
         assumeTrue(manifest != null, "找不到 AndroidManifest.xml，跳过（cwd=${System.getProperty("user.dir")}）")
         val text = manifest.orEmpty()
 
         // PendingIntent 用显式 component 构造，因此只需 action 在清单里能匹配 intent-filter
         assertTrue(text.contains("AlarmFireReceiver"), "清单必须声明 AlarmFireReceiver")
-        assertTrue(
-            text.contains("""android:name="${AlarmActions.TIME}""""),
-            "清单的 intent-filter 必须包含 ${AlarmActions.TIME}（字面量写错会让闹钟永远收不到）",
-        )
-        assertTrue(
-            text.contains("""android:name="${AlarmActions.INTERVAL}""""),
-            "清单的 intent-filter 必须包含 ${AlarmActions.INTERVAL}",
-        )
+        AlarmActions.ALL.forEach { action ->
+            assertTrue(
+                text.contains("""android:name="$action""""),
+                "清单的 intent-filter 必须包含 $action（字面量写错会让闹钟永远收不到）",
+            )
+        }
     }
 
     /**
@@ -123,7 +162,7 @@ class AlarmFireReceiverTest {
      * ## 为什么必须补
      * 3c.2 的收尾记录明确登记过：上面那条用例是"**存在性**断言，不校验 intent-filter 结构
      * ——若有人把 action 挪到别的 receiver 下，它仍会通过"。
-     * 本用例把"这两个 action 属于 `AlarmFireReceiver` 自己"与"它确实是 `exported=false`"
+     * 本用例把"这些 action 属于 `AlarmFireReceiver` 自己"与"它确实是 `exported=false`"
      * 一起钉死：
      * - action 被挪走 → `alarmReceiverBlock` 里找不到 action → 失败
      * - `exported` 被误改成 `true` → 失败（那会让任意应用伪造闹钟事件，等于打开注入面）
@@ -136,21 +175,19 @@ class AlarmFireReceiverTest {
      * 以 shell(uid=2000) 身份发送，会被非导出挡住，**因此不能用它验证本接收器**。
      */
     @Test
-    fun `the alarm receiver owns both actions and stays non-exported`() {
+    fun `the alarm receiver owns every action and stays non-exported`() {
         val manifest = readManifest()
         assumeTrue(manifest != null, "找不到 AndroidManifest.xml，跳过（cwd=${System.getProperty("user.dir")}）")
         val block = alarmReceiverBlock(manifest.orEmpty())
         assumeTrue(block != null, "清单里找不到 AlarmFireReceiver 的 <receiver> 块，跳过")
 
         val receiver = block.orEmpty()
-        assertTrue(
-            receiver.contains("""android:name="${AlarmActions.TIME}""""),
-            "两个 action 必须属于 AlarmFireReceiver 自己（不可挪到别的 receiver 下）：$receiver",
-        )
-        assertTrue(
-            receiver.contains("""android:name="${AlarmActions.INTERVAL}""""),
-            "两个 action 必须属于 AlarmFireReceiver 自己：$receiver",
-        )
+        AlarmActions.ALL.forEach { action ->
+            assertTrue(
+                receiver.contains("""android:name="$action""""),
+                "每个 action 都必须属于 AlarmFireReceiver 自己（不可挪到别的 receiver 下）：$receiver",
+            )
+        }
         assertTrue(
             receiver.contains("""android:exported="false""""),
             "AlarmFireReceiver 必须保持 exported=false（true 会让任意应用伪造闹钟事件）：$receiver",
@@ -185,5 +222,37 @@ class AlarmFireReceiverTest {
         mockkStatic(Log::class)
         every { Log.i(any(), any()) } returns 0
         every { Log.w(any(), any<String>()) } returns 0
+    }
+
+    /**
+     * 只记录"收到几次心跳"的看门狗假件（阶段 12c）。
+     *
+     * ## 为什么其余四个成员一律抛
+     * 接收器**只该**调 `onHeartbeat()`。若哪天它开始调 `ensureScheduled()` 或
+     * `onServiceStopped()`，那些动作属于服务侧的生命周期，不该从广播路径冒出来 ——
+     * 用 [NotImplementedError] 把它当场炸出来，比"多了一条无人察觉的调用"好得多
+     * （与 `ServiceTestDoubles.RecordingKeepAliveWatchdog` 的反向护栏同一手法）。
+     */
+    private class HeartbeatWatchdog : KeepAliveWatchdog {
+        var heartbeats: Int = 0
+            private set
+
+        override fun onHeartbeat(): KeepAliveVerdict {
+            heartbeats++
+            return KeepAliveVerdict(
+                action = KeepAliveAction.NOTHING,
+                input = KeepAliveInput(nowMillis = 0L, lastHeartbeatMillis = 0L, safeMode = false),
+            )
+        }
+
+        override fun ensureScheduled(): Unit = unsupported()
+
+        override fun cancel(): Unit = unsupported()
+
+        override fun onServiceHeartbeat(): Unit = unsupported()
+
+        override fun onServiceStopped(): Unit = unsupported()
+
+        private fun unsupported(): Nothing = throw NotImplementedError("the receiver must only call onHeartbeat")
     }
 }

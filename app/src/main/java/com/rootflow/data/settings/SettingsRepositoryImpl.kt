@@ -110,6 +110,12 @@ class SettingsRepositoryImpl
             edit { preferences -> preferences[SettingsKeys.LOG_RETENTION_DAYS] = LogRetention.sanitize(days) }
         }
 
+        override suspend fun setKeepAliveConsent(consented: Boolean) {
+            // 只写 true / false。`null` 是"内存镜像还没读到磁盘"的状态，
+            // **不是**一个可持久化的用户选择（见 SettingsRepository 的契约说明）。
+            edit { preferences -> preferences[SettingsKeys.KEEP_ALIVE_CONSENT] = consented }
+        }
+
         // ★ 阶段 11e：`setLiquidGlassEnabled` 与 `SettingsKeys.LIQUID_GLASS_ENABLED` 的读取
         //   均已移除（用户指令）。磁盘上可能仍留有旧键 —— **不做迁移、也不清理**：
         //   DataStore 里的孤儿键无副作用，而"为删一个键写一次迁移"的代价不值得
@@ -160,6 +166,16 @@ internal object SettingsKeys {
     /** 运行历史保留天数（阶段 6d；档位与收敛规则见 `LogRetention`）。 */
     val LOG_RETENTION_DAYS: Preferences.Key<Int> = intPreferencesKey("log_retention_days")
 
+    /**
+     * 保活知情同意的结果（`keep_alive_consent`）。
+     *
+     * 键**缺失**（首次启动、或从同意门上线前的版本升级上来）与 `false` 在语义上不同：
+     * 缺失 ⇒ 还没问过；`false` ⇒ 问过、用户点了不同意。
+     * 但两者的**动作相同**（都要弹声明页），因此 [toSettings] 把两者都映射成
+     * `false` 是可接受的 —— 见那里的说明。
+     */
+    val KEEP_ALIVE_CONSENT: Preferences.Key<Boolean> = booleanPreferencesKey("keep_alive_consent")
+
     // ★ 阶段 11e：`LIQUID_GLASS_ENABLED` 键**已移除**（用户指令）。
     //   磁盘上若留有旧键，**不迁移、不清理** —— DataStore 里的孤儿键无副作用，
     //   而"为删一个键写一次迁移"的代价不值得。
@@ -178,4 +194,9 @@ internal fun Preferences.toSettings(): RootFlowSettings =
         dynamicColor = this[SettingsKeys.DYNAMIC_COLOR] ?: true,
         // 读路径也收敛：键被外部改坏 / 旧版本写过已下线档位时，这里兜住（见 LogRetention.sanitize）
         logRetentionDays = LogRetention.sanitize(this[SettingsKeys.LOG_RETENTION_DAYS]),
+        // ★ 键**缺失**必须映射成 `false`（"还没问过 ⇒ 要问"），不能留 `null`。
+        //   留 `null` 会让"全新安装、或从同意门上线前的版本升级上来"的用户**永远停在加载态**
+        //   —— 他的磁盘上确实没有这个键，于是内存镜像永远等不到一个"已读到"的值。
+        //   `null` 只属于内存镜像的初始态（见 RootFlowSettings.KeepAliveConsent 的 KDoc）。
+        keepAliveConsent = this[SettingsKeys.KEEP_ALIVE_CONSENT] ?: false,
     )

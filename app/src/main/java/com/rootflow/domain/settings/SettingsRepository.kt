@@ -60,6 +60,20 @@ interface SettingsRepository {
      */
     suspend fun setLogRetentionDays(days: Int)
 
+    /**
+     * 写保活知情同意的结果（首启声明页的"我已知晓并同意"）。
+     *
+     * ## 只写 `true` / `false`，不写 `null`
+     * `null` 的语义是"**还没读到磁盘值**"（内存镜像的初始态），不是一个可持久化的用户选择。
+     * 把 `null` 写回磁盘会让下次冷启动永远停在加载态。
+     *
+     * ## 为什么同意**必须落盘之后**才允许拉起服务
+     * 声明页的意义在于"用户知情后 App 才有这个行为"。若先拉服务再写盘，
+     * 用户在这一瞬间杀掉进程就会留下一个"没同意但已经在保活"的状态 ——
+     * 那正是这份声明要防的事。
+     */
+    suspend fun setKeepAliveConsent(consented: Boolean)
+
     // ★ 阶段 11e：`setLiquidGlassEnabled` **已移除**（用户指令）。
     //   液态玻璃不再是底栏的材质，写入路径自然也不该存在。
     //   原先的契约说明（"不做三态：设备能力由 GlassPolicy 在渲染时判定"）随特性一起失效。

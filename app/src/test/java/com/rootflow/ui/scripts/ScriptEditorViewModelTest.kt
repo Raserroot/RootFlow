@@ -269,6 +269,117 @@ class ScriptEditorViewModelTest {
             assertEquals(0, saved.timeoutSec)
         }
 
+    // ------------------------------------------------------------ ★ 危险指令闸门（12a 的 UI 接入）
+
+    /** 必然命中的正文（`rm -rf /` 是扫描器的最高危规则）。 */
+    private val dangerousBody = "rm -rf /"
+
+    @Test
+    @DisplayName("★ 危险正文：保存被挂起（弹确认），**不落库**")
+    fun `a dangerous body opens the gate instead of saving`() =
+        runTest(testDispatcher) {
+            val viewModel = newViewModel(idArg = null)
+            advanceUntilIdle()
+            viewModel.onNameChange("清理")
+            viewModel.onBodyChange(dangerousBody)
+
+            viewModel.save()
+            advanceUntilIdle()
+
+            val prompt =
+                requireNotNull(viewModel.uiState.value.pendingDanger) { "命中危险指令必须弹确认框" }
+            assertEquals(listOf(1), prompt.lines, "弹窗要能精确指到行号（用户按行找得到）")
+            assertTrue(scripts.saveCalls.isEmpty(), "★ 用户没确认之前，一个字节都不得落库")
+            assertTrue(
+                warnings.any { it.contains("SCRIPTS_SAVE_DANGER_GATE") },
+                "闸门必须留痕，否则真机上'为什么这次没存下去'无从判读",
+            )
+        }
+
+    @Test
+    @DisplayName("★ 继续保存：确认后落库一次，弹窗关闭，且失败面仍走同一条路径")
+    fun `confirming the danger saves exactly once through the same path`() =
+        runTest(testDispatcher) {
+            val viewModel = newViewModel(idArg = null)
+            advanceUntilIdle()
+            viewModel.onNameChange("清理")
+            viewModel.onBodyChange(dangerousBody)
+            viewModel.save()
+            advanceUntilIdle()
+            assertTrue(scripts.saveCalls.isEmpty())
+
+            viewModel.confirmDangerAndSave()
+            advanceUntilIdle()
+
+            assertEquals(1, scripts.saveCalls.size, "确认之后必须真的落库（扫描器不阻断保存，用户裁定）")
+            assertEquals(dangerousBody, scripts.saveCalls.single().content, "存下去的必须是原正文，不得被改写")
+            assertNull(viewModel.uiState.value.pendingDanger, "确认后弹窗必须关闭")
+            assertTrue(
+                warnings.any { it.contains("SCRIPTS_SAVE_DANGER_CONFIRMED") },
+                "确认也要留痕（与 GATE / DISMISSED 一起构成完整的三态日志）",
+            )
+        }
+
+    @Test
+    @DisplayName("让我再想想：不落库、弹窗关闭、正文与未保存状态都保留")
+    fun `dismissing the danger keeps the form and saves nothing`() =
+        runTest(testDispatcher) {
+            val viewModel = newViewModel(idArg = null)
+            advanceUntilIdle()
+            viewModel.onNameChange("清理")
+            viewModel.onBodyChange(dangerousBody)
+            viewModel.save()
+            advanceUntilIdle()
+
+            viewModel.dismissDanger()
+            advanceUntilIdle()
+
+            assertTrue(scripts.saveCalls.isEmpty(), "再想想 = 什么都不写")
+            assertNull(viewModel.uiState.value.pendingDanger)
+            assertEquals(dangerousBody, viewModel.uiState.value.form.content, "正文必须原样留着（这正是'再想想'的意思）")
+            assertTrue(viewModel.dirty.value, "改动仍未保存 ⇒ dirty 必须保持为真（否则返回时不会提示）")
+            assertTrue(warnings.any { it.contains("SCRIPTS_SAVE_DANGER_DISMISSED") })
+        }
+
+    @Test
+    @DisplayName("安全正文：不弹窗（闸门不得变成噪音）")
+    fun `a safe body never opens the gate`() =
+        runTest(testDispatcher) {
+            val viewModel = newViewModel(idArg = null)
+            advanceUntilIdle()
+            viewModel.onNameChange("备份")
+            viewModel.onBodyChange("cp -a /data/local/tmp/a /data/local/tmp/b\nls -l /sdcard")
+
+            viewModel.save()
+            advanceUntilIdle()
+
+            assertNull(viewModel.uiState.value.pendingDanger, "常见写法不得弹窗 —— 弹窗变噪音后真正的危险会被一起放过")
+            assertEquals(1, scripts.saveCalls.size)
+        }
+
+    @Test
+    @DisplayName("★ 危险正文 + 字段非法：先报字段错误，**不弹危险框**（顺序）")
+    fun `validation outranks the danger gate`() =
+        runTest(testDispatcher) {
+            val viewModel = newViewModel(idArg = null)
+            advanceUntilIdle()
+            // 名称留空（字段级阻断）+ 正文危险
+            viewModel.onBodyChange(dangerousBody)
+
+            viewModel.save()
+            advanceUntilIdle()
+
+            assertNull(
+                viewModel.uiState.value.pendingDanger,
+                "字段级错误更前置：先告诉用户'存不了'，而不是先弹一个'你要不要存'",
+            )
+            assertTrue(
+                viewModel.uiState.value.errors
+                    .any { it.field == ScriptFormField.NAME },
+            )
+            assertTrue(scripts.saveCalls.isEmpty())
+        }
+
     @Test
     @DisplayName("lua 语言被拒（v1 只实现 shell）")
     fun `lua is rejected by validation`() =

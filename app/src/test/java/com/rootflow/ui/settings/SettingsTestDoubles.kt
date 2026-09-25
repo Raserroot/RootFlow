@@ -79,6 +79,15 @@ internal class FakeSettingsRepository(
         state.value = state.value.copy(logRetentionDays = LogRetention.sanitize(days))
     }
 
+    /** 保活同意的写入序列（断言"只在点同意/不同意时才落盘"）。 */
+    val consentWrites = mutableListOf<Boolean>()
+
+    override suspend fun setKeepAliveConsent(consented: Boolean) {
+        maybeFail()
+        consentWrites += consented
+        state.value = state.value.copy(keepAliveConsent = consented)
+    }
+
     // ★ 阶段 11e：`setLiquidGlassEnabled` 的替身已随特性移除。
 
     private fun maybeFail() {

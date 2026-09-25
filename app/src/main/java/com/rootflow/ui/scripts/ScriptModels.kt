@@ -262,6 +262,15 @@ data class ScriptEditorUiState(
     val errors: List<ScriptFormError>,
     val dirty: Boolean,
     val isNew: Boolean,
+    /**
+     * 非 `null` ⇒ 正在等用户确认"这份脚本里有危险指令"（用户需求，2026-09-25）。
+     *
+     * ## 它不参与 [canSave]
+     * 弹窗本身就是"保存被挂起"的表达：置上它之后保存**不再被重复触发**，
+     * 用户点「继续保存」才会真正落库。把它塞进 `canSave` 会让保存按钮在弹窗期间变灰，
+     * 而那时用户看的是弹窗、不是按钮，纯属多余的状态。
+     */
+    val pendingDanger: ScriptDangerPrompt? = null,
 ) {
     /** 阻断保存的第一条错误（UI 的 Snackbar 文案）。 */
     val blockingError: ScriptFormError?
@@ -289,6 +298,105 @@ data class ScriptEditorUiState(
         /** 与 [ScriptProjections.COUNT_UNKNOWN] 同值（同一份"未知"占位，避免两处漂移）。 */
         const val COUNT_UNKNOWN: String = ScriptProjections.COUNT_UNKNOWN
     }
+}
+
+/**
+ * "这份脚本里有危险指令"的待确认提示（用户需求，2026-09-25）。
+ *
+ * ## 它携带的是**扫描结果**，不是"要不要保存"的意图
+ * 点「继续保存」之后走的是**同一条 `save()` 路径**（只是跳过这道闸门），
+ * 因此这里不需要记住任何保存参数 —— 表单始终是唯一真相源。
+ * 把它设计成"请求对象"会让"用户在弹窗里改了表单"这类不存在的情况看起来可能发生。
+ *
+ * @property findings 命中的全部危险指令（**至少一条**；空列表不该构造出本对象）
+ */
+data class ScriptDangerPrompt(
+    val findings: List<ScriptSafetyScan.DangerFinding>,
+) {
+    /** 最高严重度（决定弹窗标题措辞：真要命的用"高危"，其余用"需留意"）。 */
+    val highest: ScriptSafetyScan.DangerSeverity
+        get() = findings.maxByOrNull { it.severity.ordinal }?.severity ?: ScriptSafetyScan.DangerSeverity.MEDIUM
+
+    /** 命中的**行号**升序列表（弹窗里逐行列出，用户能直接定位）。 */
+    val lines: List<Int>
+        get() = findings.map { it.lineNumber }.distinct().sorted()
+}
+
+/**
+ * 危险指令弹窗的**文案投影**（纯函数，用户需求 2026-09-25）。
+ *
+ * ## 为什么文案不写在 Composable 里
+ * 本仓库**没有 UI 测试**（决策 B：`ui-test-*` / espresso 全不在离线缓存）
+ * ⇒ 写在 Composable 里的分支**覆盖率恒为 0**。而这里的分支不是装饰：
+ * 标题按严重度分两档、正文要列出命中位置、命中过多时要折叠 ——
+ * 每一条错了都会被用户看成一次误报或一次漏报说明。
+ * 搬到纯函数里之后，全部可被 `ScriptDangerProjectionsTest` 穷举。
+ *
+ * ## 两档标题的用词
+ * 「高危」与「需留意」不是同义修辞：前者对应**不可逆**的破坏（格盘、覆写块设备、删根），
+ * 后者对应"大概率会后悔"。用同一个标题会让用户对两类命中产生同一种反应，
+ * 而 `ScriptSafetyScan` 分两档的全部意义就是让它们被区别对待。
+ */
+object ScriptDangerProjections {
+    /**
+     * 正文里**最多列出**几条命中。
+     *
+     * 取值理由：弹窗正文超过三屏就没人读了，而用户此刻需要的是"知道有危险、并能定位"，
+     * 不是逐条审计。取 3 条 + 一行"另有 N 处"；完整命中始终能在正文里直接看到
+     * （扫描器是按行匹配的，用户按行号一比就对上）。
+     */
+    const val MAX_LISTED: Int = 3
+
+    /** 高危命中的标题。 */
+    const val TITLE_HIGH: String = "脚本包含高危指令"
+
+    /** 中危命中的标题。 */
+    const val TITLE_MEDIUM: String = "脚本包含需要留意的指令"
+
+    /** 「继续保存」——**动词短语**，不是"确定"（见下）。 */
+    const val CONFIRM_LABEL: String = "继续保存"
+
+    /** 「让我再想想」——用户需求的原话，保留。 */
+    const val DISMISS_LABEL: String = "让我再想想"
+
+    /**
+     * 标题。
+     *
+     * 用**动词/结果**措辞而不是"警告/错误"：用户此刻要做的判断是
+     * "我要不要把它存下去"，标题应当直接指向那个动作的后果。
+     */
+    fun title(highest: ScriptSafetyScan.DangerSeverity): String =
+        if (highest == ScriptSafetyScan.DangerSeverity.HIGH) TITLE_HIGH else TITLE_MEDIUM
+
+    /**
+     * 正文：逐条列出"第几行 · 为什么危险"，并附上该行原文。
+     *
+     * ## 为什么要带原文摘录
+     * 只说"第 3 行有危险指令"会让用户来回翻找；而脚本里同一行号在编辑与保存之间
+     * **不会变**（扫描发生在保存那一刻的正文上），所以"行号 + 原文"是精确指认。
+     * 摘录已由扫描器截断（`ScriptSafetyScan.EXCERPT_MAX`），不会把一整段 base64 塞进弹窗。
+     *
+     * @param prompt 至少一条命中（空列表不应构造出该对象，见其 KDoc）
+     */
+    fun body(prompt: ScriptDangerPrompt): String {
+        val listed = prompt.findings.take(MAX_LISTED)
+        val text =
+            listed.joinToString(separator = "\n\n") { finding ->
+                "第 ${finding.lineNumber} 行 · ${finding.reason}\n    ${finding.excerpt}"
+            }
+        val remaining = prompt.findings.size - listed.size
+        return if (remaining > 0) "$text\n\n…另有 $remaining 处未展开" else text
+    }
+
+    /**
+     * 弹窗下方的**一句说明**（按钮之上的那行小字）。
+     *
+     * ## 它必须说清"这个弹窗不是安全承诺"
+     * `ScriptSafetyScan` 是**文本模式匹配**：变量拼装、动态生成的命令它抓不到
+     * （已批准的范围取舍，见其类 KDoc）。若这里不写，用户会把它读成"扫描过了 = 安全"，
+     * 而下一次真正的危险正好落在漏报里时，这个弹窗就成了**误导**。
+     */
+    fun footnote(): String = "这是文本匹配检查，只能认出常见写法；它不影响你保存，也不会执行任何东西。"
 }
 
 /**

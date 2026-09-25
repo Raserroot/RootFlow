@@ -17,7 +17,7 @@ import dagger.hilt.android.AndroidEntryPoint
 /**
  * RootFlow 唯一 Activity（单 Activity + Compose 架构）。
  *
- * ## ★ 阶段 6a 之后它只剩三件事（顺序是硬约束）
+ * ## ★ 阶段 6a 起它只剩三件事，顺序是硬约束
  * 1. **`enableEdgeToEdge()`**（需求 §6「边缘到边缘」）—— 必须在 `setContent` **之前**，
  *    否则第一帧会先按不透明系统栏布局，再跳一次，肉眼可见地闪一下
  * 2. **拉起前台服务**：本类是全应用**唯一**拉起 `KeepAliveService` 的入口。
@@ -29,10 +29,42 @@ import dagger.hilt.android.AndroidEntryPoint
  *    前台服务通知不会显示**。这是纯系统权限弹窗，**不是**一个 Compose 页面/UI 功能
  *    （阶段 5 已批准的裁定 ②）
  *
+ * ## ★★ 阶段 12c：第 2、3 件事**挪到"用户确认同意之后"**（顺序变了，理由如下）
+ * 在此之前，`onCreate` 里是**无条件** `KeepAliveService.start()`：
+ * ```
+ * enableEdgeToEdge() → KeepAliveService.start() → 申请通知权限 → setContent { … }
+ * ```
+ * 而首启的知情同意声明页（`ui/consent/`）要求"**同意之后** App 才有这个行为"。
+ * 若服务仍在 `onCreate` 里无条件启动，那份声明就是**形式**：用户在声明页上还在读，
+ * 服务（以及它带来的保活行为）已经在跑了。
+ *
+ * 现在的顺序：
+ * ```
+ * enableEdgeToEdge() → setContent { RootFlowApp(onKeepAliveGranted = …, onKeepAliveDeclined = …) }
+ *                          ↓ 读到 keepAliveConsent == true 时（含刚点同意）
+ *                       onKeepAliveGranted() → 拉服务 + 申请通知权限
+ * ```
+ * 两条纪律**没有**因此放宽：
+ * - `registerForActivityResult` **仍在字段初始化**（必须在 `STARTED` 之前注册）——
+ *   只是"什么时候 `launch`"变成了"同意之后"
+ * - 系统交互**仍不搬进 Composable**：Composable 只发出"可以了"的信号（`onKeepAliveGranted`），
+ *   真正的 `startForegroundService` / 权限申请都在本类里
+ *
+ * ### 为什么把"申请通知权限"也一起挪了（**这条登记为一次有意的行为变更**）
+ * 它此前在每次启动时无条件检查并申请。而通知是**保活机制的一部分**
+ * （声明页的第 1、2 条都写着"会常驻一条通知"）⇒ 在用户还没看到并同意那份声明之前
+ * 弹系统权限框，属于越权。现在它随服务一起放在同意之后。
+ *
+ * ### 迟一点启动服务有没有代价
+ * 有，但可忽略且方向正确：从冷启动到"读到同意"要多等一次 DataStore 首帧（几百毫秒），
+ * 期间界面是加载态。这段时间**事件源尚未启动**（它们的所有者是前台服务），
+ * 而代价只是"开机后这几百毫秒内的事件不投递" —— 与"未经同意就保活"相比，这个代价是对的。
+ * 已同意过的用户行为不变：`consent == true` 一到，服务照常被拉起。
+ *
  * 界面本身全部交给 [RootFlowApp]（`ui/` 包）。本类**不认识**主题、Tab 或任何布局，
  * 也不再直接 import 任何 Compose 组件（阶段 0–5 的 `Text("RootFlow")` 占位已移除）。
  *
- * ## ★ 阶段 6a 没有把第 3 件事搬进 Compose（**有意为之，勿"顺手"迁移**）
+ * ## ★ 阶段 6a 没有把权限申请搬进 Compose（**有意为之，勿"顺手"迁移**）
  * 一个自然的想法是把它挪进 `LaunchedEffect`，但那样会**丢掉它**：
  * - `registerForActivityResult` **必须**在 `STARTED` 之前调用，也就是 Activity 的字段初始化
  *   或 `onCreate` 里。放进 Composable 需要在 `rememberLauncherForActivityResult` 与
@@ -70,15 +102,32 @@ class MainActivity : ComponentActivity() {
         // ① 边缘到边缘（必须在任何内容之前；系统栏图标明暗由它自行跟随主题）
         enableEdgeToEdge()
 
-        // ② 拉起前台服务（必须在主线程；服务内部自己完成建渠道 + 前台化）
-        KeepAliveService.start(context = this)
-
-        // ③ 申请通知权限（API 33+；未授予过才弹，避免每次启动都打扰用户）
-        requestNotificationPermissionIfNeeded()
-
+        // ② 拉起前台服务与申请通知权限**都不再在这里**（阶段 12c）：
+        //    它们挪到"读到用户同意之后"，见类 KDoc 的说明。
+        //    `RootFlowApp` 只负责在正确的时机把信号发回来。
         setContent {
-            RootFlowApp()
+            RootFlowApp(
+                onKeepAliveGranted = ::onKeepAliveConsentGranted,
+                onKeepAliveDeclined = ::finish,
+            )
         }
+    }
+
+    /**
+     * 用户已同意保活（本次启动前同意过，或刚刚在声明页点了同意）。
+     *
+     * 两件事都是**系统交互**，因此留在 Activity 里（见类 KDoc 的两条纪律）：
+     * ① 拉起前台服务 —— 此刻 Activity 处于前台，是系统无条件允许的启动时机
+     * ② 申请通知权限 —— 通知是保活的一部分（声明页第 1、2 条），
+     *    因此它也必须发生在用户看到并同意那份声明之后
+     *
+     * **幂等**：Activity 重建（旋转 / 进程内恢复）会让 `RootFlowApp` 的 `LaunchedEffect`
+     * 再跑一次，而 `KeepAliveService.start` 与 `requestNotificationPermissionIfNeeded`
+     * 各自都是幂等的（重复投递 `onStartCommand` 只是刷新通知；已授予的权限直接返回）。
+     */
+    private fun onKeepAliveConsentGranted() {
+        KeepAliveService.start(context = this)
+        requestNotificationPermissionIfNeeded()
     }
 
     /**

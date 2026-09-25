@@ -1,7 +1,11 @@
 package com.rootflow.data.service
 
+import android.util.Log
+import com.rootflow.data.event.SafeModeSnapshot
 import com.rootflow.domain.event.EventSourceState
 import dagger.Lazy
+import io.mockk.every
+import io.mockk.mockkStatic
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.ExperimentalCoroutinesApi
 import kotlinx.coroutines.cancel
@@ -31,9 +35,25 @@ import org.junit.jupiter.api.Test
  *
  * 协程纪律同 [ForegroundServiceControllerTest]：共用同一 [TestDispatcher]，用 `runCurrent()`
  * 推进一步而不是 `advanceUntilIdle()`（`AGENT_PROTOCOL.md §9.1 / §9.3`）。
+ *
+ * ## ★ 必须自己打桩 `android.util.Log`（2026-09-25 补，勿删）
+ * 本类经由 `ForegroundServiceController` 调 `Log.i`，而单测**没有**开 `returnDefaultValues`
+ * （`AGENT_PROTOCOL.md §5.10`）⇒ 不打桩时任何一条注册路径都会抛
+ * `RuntimeException: Method i in android.util.Log not mocked`。
+ *
+ * 它此前"能跑过"是因为**别的测试类**（字母序在前的那些）已经装了静态桩 ——
+ * 那让本类的成败取决于**执行顺序**：单独跑本类必炸，全量跑却绿。
+ * 同一形态在 11e 补丁5 已经修过一次（`ForegroundServiceControllerTest`），
+ * 这次是同一个坑的第二个受害者：**过滤跑子集时它立刻暴露了**。
  */
 @OptIn(ExperimentalCoroutinesApi::class)
 class EventSourceLifecycleOwnershipTest {
+    init {
+        mockkStatic(Log::class)
+        every { Log.i(any(), any()) } returns 0
+        every { Log.w(any(), any<String>()) } returns 0
+    }
+
     private val testDispatcher: TestDispatcher = StandardTestDispatcher()
     private val controllerScope = CoroutineScope(testDispatcher)
 
@@ -45,6 +65,10 @@ class EventSourceLifecycleOwnershipTest {
             circuitBreaker = Lazy { FakeControllerCircuitBreaker() },
             notifier = notifier,
             daemonSupervisor = RecordingDaemonSupervisor(),
+            // 阶段 12c 的两个新依赖与"事件源所有权"无关：本类测的是"谁在启停源"，
+            // 因此这里给**记录型**假件即可（它们的正确性由 ForegroundServiceControllerTest 覆盖）。
+            keepAliveWatchdog = RecordingKeepAliveWatchdog(),
+            safeModeSnapshot = SafeModeSnapshot(),
             scope = controllerScope,
         )
 
@@ -115,6 +139,8 @@ class EventSourceLifecycleOwnershipTest {
                     circuitBreaker = Lazy { FakeControllerCircuitBreaker() },
                     notifier = localNotifier,
                     daemonSupervisor = RecordingDaemonSupervisor(),
+                    keepAliveWatchdog = RecordingKeepAliveWatchdog(),
+                    safeModeSnapshot = SafeModeSnapshot(),
                     scope = controllerScope,
                 )
 

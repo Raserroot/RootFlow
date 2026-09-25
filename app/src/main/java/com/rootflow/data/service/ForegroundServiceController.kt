@@ -3,17 +3,20 @@ package com.rootflow.data.service
 import android.util.Log
 import com.rootflow.data.di.EventDispatcherScope
 import com.rootflow.data.event.EventSourceRegistry
+import com.rootflow.data.event.SafeModeSnapshot
 import com.rootflow.domain.event.CircuitBreaker
 import com.rootflow.domain.event.DaemonSupervisor
 import com.rootflow.domain.event.EventSourceStatus
 import com.rootflow.domain.event.TripReason
 import com.rootflow.domain.service.ForegroundState
 import com.rootflow.domain.service.KeepAliveHealthCheck
+import com.rootflow.domain.service.KeepAliveWatchdog
 import com.rootflow.domain.service.SafeModeAlertSink
 import com.rootflow.domain.service.ServiceNotificationModel
 import com.rootflow.domain.service.ServiceNotificationText
 import com.rootflow.domain.service.ServiceNotifier
 import com.rootflow.domain.service.ServiceStateProvider
+import com.rootflow.service.receiver.AlarmActions
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Job
 import kotlinx.coroutines.delay
@@ -58,10 +61,19 @@ import javax.inject.Singleton
  * 若进程刚被 sticky 拉起、而协程还没被调度，前台通知就会停留在服务自己设的引导态。
  * 因此这里同步算一次，让状态在 `register()` 返回时就已经正确。
  *
- * ## 与 `KeepAliveHealthCheck` 的关系（裁定 ①）
- * 本类**不实现**健康检查（`androidx.work` 不在离线缓存，已报并裁定为"只留端口与设计"）。
- * 这里只打一行 [KeepAliveHealthCheck.HEALTH_CHECK_TODO_MARKER]，
- * 让"设计已留、实现未做"在真机日志里是**显式事实**而不是遗漏。
+ * ## 与 `KeepAliveHealthCheck` 的关系（阶段 5 的裁定 ① **已在 12c 落地**）
+ * 阶段 5 的裁定是"只留端口与设计"（当时以为要 `androidx.work`，而它不在离线缓存）。
+ * **那个前提不成立** —— 设计本身用的是 `AlarmManager` 自续期。
+ * 阶段 12c 落地后，本类与看门狗的关系是三条边：
+ * 1. [register] 尾部 `ensureScheduled()`：服务起来就确保"下一次检查"已被安排
+ * 2. [publishState] 尾部 `onServiceHeartbeat()`：本类是**每次状态变化的唯一汇聚点**，
+ *    正好是设计要求的"心跳写入点"
+ * 3. [unregister] 尾部 `onServiceStopped()`：服务没了，看门狗必须能判出来
+ *
+ * @param keepAliveWatchdog 保活看门狗（阶段 12c）。本类**只喂它状态**，不代它做决定：
+ *   判定与自愈动作都在 `KeepAliveWatchdogImpl` 里（纯 Kotlin，有单测）。
+ * @param safeModeSnapshot 安全模式的三态快照（阶段 12c）。本类在**每次状态变化**时刷新它，
+ *   使看门狗读到的是"确定的"结论而不是启动期的 `null`（见 `SafeModeSnapshot` 的 KDoc）。
  *
  * ## ★ 为什么 `circuitBreaker` 是 `dagger.Lazy`（**实测踩坑记录，勿改回直接注入**）
  * 本类与熔断器之间**天然互相需要**：
@@ -112,6 +124,8 @@ class ForegroundServiceController
         private val circuitBreaker: dagger.Lazy<CircuitBreaker>,
         private val notifier: ServiceNotifier,
         private val daemonSupervisor: DaemonSupervisor,
+        private val keepAliveWatchdog: KeepAliveWatchdog,
+        private val safeModeSnapshot: SafeModeSnapshot,
         @EventDispatcherScope private val scope: CoroutineScope,
     ) : SafeModeAlertSink,
         ServiceStateProvider {
@@ -199,8 +213,33 @@ class ForegroundServiceController
             //   放在事件源之后：常驻脚本的启动要读 Room（触发器表），
             //   而事件源是"外部随时可能来事件"的那一侧 —— 先订阅再干别的。
             //   单独 runCatching：常驻脚本起不来不该让服务起不来。
-            runCatching { daemonSupervisor.start() }
-                .onFailure { Log.w(TAG, "FGS_REGISTER daemon supervisor start failed: ${describe(it)}") }
+            //
+            // ★★ 阶段 12c 安全护栏（①）：**安全模式下不启动常驻脚本监管**。
+            //   为什么必须在这里钉死：本方法此前无条件调 `daemonSupervisor.start()`，
+            //   而 `DaemonSupervisorImpl.start()` 内部**没有任何安全模式判断**。
+            //   走这条路的既有路径是 `START_STICKY`（系统重建服务），那是**偶发**的；
+            //   而加了 15 分钟一次的心跳看门狗之后，熔断期间会**周期性**走它一次 ——
+            //   于是"安全模式 = 全部停下来"这条语义就不再成立
+            //   （熔断第 2 步刚终止的脚本会被反复重新造出来）。
+            //   它不会真的绕过熔断（每个脚本执行前还有 `SafeModeDecision.shouldRun`），
+            //   但那条兜底是**第二层**；第一层这里必须是干净的。
+            //
+            //   `getOrDefault(false)` 与 [currentSafeMode] 同款：读不到就按"不在安全模式"，
+            //   保守方向是不误报熔断（**不是**"忽略熔断" —— 下面那行日志会留痕）。
+            if (safeModeNow(breaker)) {
+                Log.i(TAG, "DAEMON_SUPERVISOR_SKIPPED reason=safe mode (register)")
+            } else {
+                runCatching { daemonSupervisor.start() }
+                    .onFailure { Log.w(TAG, "FGS_REGISTER daemon supervisor start failed: ${describe(it)}") }
+            }
+
+            // ★ 阶段 12c：服务起来就确保"下一次保活检查"已被安排（幂等：同一闹钟被替换而非叠加）。
+            //   **安全模式下也照排**：看门狗是"检查机制"而不是"运行能力"，
+            //   护栏在判定里（`KeepAliveDecision` 第 1 行），不在排不排闹钟这里。
+            //   这样即使熔断期间服务被系统杀掉，退出安全模式后下一次心跳仍能自愈，
+            //   不必等用户手动打开 App。
+            runCatching { keepAliveWatchdog.ensureScheduled() }
+                .onFailure { Log.w(TAG, "FGS_REGISTER ensure watchdog failed: ${describe(it)}") }
 
             subscription =
                 scope.launch {
@@ -223,12 +262,15 @@ class ForegroundServiceController
             // ⑥ 阶段 6b：有界追赶（见 [STATE_CATCH_UP_STEPS] 的取值理由）
             scheduleStateCatchUp()
 
+            // ⑦ 阶段 12c：健康检查的落地标记（阶段 5 的 `KEEPALIVE_HEALTH_TODO` 已被它取代）。
+            //   真机判据：应且只应出现一次，`implemented=true`。
             Log.i(
                 TAG,
-                KeepAliveHealthCheck.HEALTH_CHECK_TODO_MARKER +
+                KeepAliveHealthCheck.HEALTH_CHECK_ARMED_MARKER +
                     " design=AlarmManager-self-renew intervalMillis=" +
                     KeepAliveHealthCheck.CHECK_INTERVAL_MILLIS +
-                    " implemented=false reason=androidx.work not in offline cache (approved decision)",
+                    " implemented=true action=" +
+                    AlarmActions.KEEPALIVE,
             )
         }
 
@@ -256,6 +298,10 @@ class ForegroundServiceController
             //   放在事件源停止之前，是为了让"服务正在停"这件事先从脚本侧收敛干净。
             runCatching { daemonSupervisor.stop() }
                 .onFailure { Log.w(TAG, "FGS_UNREGISTER daemon supervisor stop failed: ${describe(it)}") }
+            // ★ 阶段 12c：让看门狗知道"服务没了"。缺了这一行，看门狗会以为服务还活着，
+            //   于是**永不尝试拉起**，而且一行日志都不会有（判定表见 `KeepAliveDecision`）。
+            runCatching { keepAliveWatchdog.onServiceStopped() }
+                .onFailure { Log.w(TAG, "FGS_UNREGISTER watchdog stop report failed: ${describe(it)}") }
             runCatching { eventSourceRegistry.stop() }
                 .onFailure { Log.w(TAG, "FGS_UNREGISTER registry stop failed: ${describe(it)}") }
             runCatching { notifier.cancelAlert() }
@@ -330,6 +376,9 @@ class ForegroundServiceController
             safeMode: Boolean,
             reason: TripReason?,
         ) {
+            // ★ 阶段 12c：把**确定的**安全模式结论同步给看门狗快照（三态，见 SafeModeSnapshot）。
+            //   这是运行期唯一的刷新点，因此"用户点熔断 / 点恢复"之后看门狗立刻读到新值。
+            safeModeSnapshot.update(safeMode)
             val state = currentState(safeMode = safeMode)
             val model =
                 ServiceNotificationText.serviceNotification(
@@ -388,6 +437,15 @@ class ForegroundServiceController
                 }
             _state.value = snapshot.first
             _sources.value = snapshot.second
+
+            // ★ 阶段 12c：保活心跳。设计要求的写入点是"每次状态变化"，
+            //   而本方法**正是那个汇聚点**（调用点表见其 KDoc 上方的四行表格）
+            //   ⇒ 不需要在别处再加第二个调用点，也就不会出现"某个状态变化忘了写心跳"。
+            //   `isRegistered` 为假时（`unregister` 尾部那次发布）不写：
+            //   服务正在停，写心跳会让看门狗以为它还活着。
+            if (isRegistered) {
+                runCatching { keepAliveWatchdog.onServiceHeartbeat() }
+            }
         }
 
         /**
@@ -428,7 +486,16 @@ class ForegroundServiceController
         }
 
         /** 取熔断器当前的安全模式；拿不到时按"不在安全模式"（保守：不误报熔断）。 */
-        private fun currentSafeMode(): Boolean = runCatching { circuitBreaker.get().safeMode.value }.getOrDefault(false)
+        private fun currentSafeMode(): Boolean = runCatching { safeModeNow(circuitBreaker.get()) }.getOrDefault(false)
+
+        /**
+         * 从一个**已解引用**的熔断器读安全模式（阶段 12c 抽出，供 `register()` 复用）。
+         *
+         * 读不到时按 `false`：保守方向是"不误报熔断"。注意这**不是**"忽略熔断" ——
+         * 上面那条 `DAEMON_SUPERVISOR_SKIPPED` 日志会如实记下当时读到的是什么。
+         */
+        private fun safeModeNow(breaker: CircuitBreaker): Boolean =
+            runCatching { breaker.safeMode.value }.getOrDefault(false)
 
         /** 源状态快照；失败时给空列表（`publishState` 的调用方不应因它崩）。 */
         private fun querySources(): List<EventSourceStatus> =

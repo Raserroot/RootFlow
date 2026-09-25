@@ -131,6 +131,20 @@ class ScriptEditorViewModel
 
         private val _errors: MutableStateFlow<List<ScriptFormError>> = MutableStateFlow(emptyList())
 
+        /**
+         * 待用户确认的危险指令（用户需求，2026-09-25）。
+         *
+         * ## 非 `null` 表示什么
+         * "保存已被**挂起**，正在等用户回答'确定要存吗'"。它不参与 `canSave`
+         * （弹窗本身就是挂起的表达 —— 见 `ScriptEditorUiState.pendingDanger` 的 KDoc）。
+         *
+         * ## 为什么它必须是状态而不是一次性事件
+         * 弹窗要在**配置变更（旋转）后依然在**。若用 `SharedFlow` 发一次，
+         * 旋转后弹窗消失而 `disposable` 状态不再：用户会以为自己点错了，
+         * 再点一次保存又弹一次 —— 反复弹窗的观感比什么都不弹更糟。
+         */
+        private val _pendingDanger: MutableStateFlow<ScriptDangerPrompt?> = MutableStateFlow(null)
+
         private val _triggerTotal: MutableStateFlow<Int?> = MutableStateFlow(null)
 
         /**
@@ -296,23 +310,30 @@ class ScriptEditorViewModel
          * 用户"只点了触发器、然后按返回"会看到"放弃未保存的修改？" ——
          * 而**根本没有未保存的修改**（触发器已经在库里了）。那是一条会诱导用户
          * 点"放弃"的假提示。
+         *
+         * ## 六个输入被分成两组（阶段 12c 新增 `pendingDanger` 时的取舍）
+         * `combine` 的具名重载最多五个流 ⇒ 直接加第六个会编译不过。分组依据不是"凑数"，
+         * 而是**它们的生命周期**：左边是"表单本身"，右边是"这一次保存尝试的状态"
+         * （进行中 / 四种装载失败 / 待确认的危险指令）。
          */
         val uiState: StateFlow<ScriptEditorUiState> =
             combine(
-                _form,
-                _loading,
-                _saving,
-                _loadError,
-                _errors,
-            ) { form, loading, saving, loadError, errors ->
+                combine(_form, _loading, _errors) { form, loading, errors ->
+                    FormState(form = form, loading = loading, errors = errors)
+                },
+                combine(_saving, _loadError, _pendingDanger) { saving, loadError, danger ->
+                    SaveState(saving = saving, loadError = loadError, pendingDanger = danger)
+                },
+            ) { formState, saveState ->
                 ScriptEditorUiState(
-                    form = form,
-                    loading = loading,
-                    saving = saving,
-                    loadError = loadError,
-                    errors = errors,
-                    dirty = form != baseline,
+                    form = formState.form,
+                    loading = formState.loading,
+                    saving = saveState.saving,
+                    loadError = saveState.loadError,
+                    errors = formState.errors,
+                    dirty = formState.form != baseline,
                     isNew = key.scriptId == null,
+                    pendingDanger = saveState.pendingDanger,
                 )
             }.stateIn(
                 scope = viewModelScope,
@@ -401,12 +422,24 @@ class ScriptEditorViewModel
         /**
          * 保存。
          *
-         * ## 三个失败面分开处理，**全部不静默**（`STAGE6C-PLAN.md §3.3`）
+         * ## 四个失败面分开处理，**全部不静默**（`STAGE6C-PLAN.md §3.3`）
          * | # | 面 | 处理 |
          * |---|---|---|
          * | ① | 本地校验失败 | 填 [uiState] 的 `errors`，**不调仓库** |
-         * | ② | `WriteResult.Failed` | 表单**原样保留**（用户输入不能丢）+ Snackbar |
-         * | ③ | `load` 失败（编辑既有脚本时） | 早于保存发生，`loadError` 已挡住保存 |
+         * | ② | **危险指令命中** | 弹确认框（[pendingDanger]），**不调仓库**；用户点「继续保存」才真的存 |
+         * | ③ | `WriteResult.Failed` | 表单**原样保留**（用户输入不能丢）+ Snackbar |
+         * | ④ | `load` 失败（编辑既有脚本时） | 早于保存发生，`loadError` 已挡住保存 |
+         *
+         * ## ★ ② 的顺序（在 ① 之后、③ 之前）
+         * - 排在**校验之后**：字段级错误是"存不了"，危险指令是"能存但你要看一眼" ——
+         *   前者更前置。若顺序反了，用户把名称清空 + 写了 `rm -rf /` 时会先看到危险弹窗，
+         *   点「继续保存」后才被告知"名称不能为空"，白弹一次
+         * - 排在**写库之前**：闸门的意义就在"没确认就不落库"
+         *
+         * ## 扫描器**不阻断**保存（用户裁定）
+         * 弹窗只是确认，不是禁止：点「继续保存」走的是**同一条** [performSave]，
+         * 没有任何额外的拦截点。有 root 的脚本本来就能做任何事，
+         * 这里只负责"让用户在写下去之前知道自己在写什么"。
          *
          * ## 防连点
          * `saving` 在**启动协程之前**同步置位 —— 与 6b 的环境刷新是同一个教训
@@ -424,12 +457,80 @@ class ScriptEditorViewModel
                 emitMessage(errors.first { it.blocking }.message)
                 return
             }
+
+            val findings = ScriptSafetyScan.scan(current.content)
+            if (findings.isNotEmpty()) {
+                _pendingDanger.value = ScriptDangerPrompt(findings)
+                // 逐条留痕（真机判读"为什么这次没存下去"时，这一行就是答案）
+                onWarning(
+                    "SCRIPTS_SAVE_DANGER_GATE hits=${findings.size} " +
+                        "highest=${findings.maxByOrNull { it.severity.ordinal }?.severity} " +
+                        "lines=${findings.map { it.lineNumber }}",
+                )
+                return
+            }
+
+            performSave(form = current)
+        }
+
+        /**
+         * 用户在危险确认框里点了「继续保存」。
+         *
+         * ## 为什么校验要**重跑一次**（而不是直接落库）
+         * 弹窗是模态的，因此这期间表单"不可能"被改 —— 但那是 **UI 的性质**，
+         * 不该被 ViewModel 当成前提。重跑校验的成本是零，换来的是
+         * "这条路径与 [save] 走同一套准入"这个结构性质（少一条能绕过校验的入口）。
+         *
+         * ## 为什么也重新扫一遍（**不跳过闸门，而是"带着确认"过闸门**）
+         * 不重扫是更省事的写法（记住"已确认"），但那样就出现了第二个"要不要弹"的判据；
+         * 而两个判据迟早漂移。这里的选择是：确认只表示"**这一次**保存放行"，
+         * 每次保存都重新走扫描 —— 于是"改了正文再存"必然被重新检查。
+         */
+        fun confirmDangerAndSave() {
+            val prompt = _pendingDanger.value ?: return
+            _pendingDanger.value = null
+            if (_saving.value) return
+
+            val current = _form.value
+            val errors = ScriptFormValidation.validate(current)
+            _errors.value = errors
+            if (errors.any { it.blocking }) {
+                onWarning("SCRIPTS_SAVE_BLOCKED fields=${errors.filter { it.blocking }.map { it.field }}")
+                emitMessage(errors.first { it.blocking }.message)
+                return
+            }
+
+            onWarning(
+                "SCRIPTS_SAVE_DANGER_CONFIRMED hits=${prompt.findings.size} " +
+                    "lines=${prompt.findings.map { it.lineNumber }}",
+            )
+            performSave(form = current)
+        }
+
+        /**
+         * 用户在危险确认框里点了「让我再想想」：关掉弹窗，**回到编辑页**，什么都不写。
+         *
+         * 表单与 `dirty` 都不动 —— 用户的正文还在，编辑状态还在（这正是"再想想"该有的结果）。
+         */
+        fun dismissDanger() {
+            val prompt = _pendingDanger.value ?: return
+            _pendingDanger.value = null
+            onWarning("SCRIPTS_SAVE_DANGER_DISMISSED hits=${prompt.findings.size}")
+        }
+
+        /**
+         * 真正落库（`save` 与 `confirmDangerAndSave` 的**共同出口**）。
+         *
+         * 两条入口共用它，是为了让"过了闸门之后的行为"只有一份实现：
+         * 任何只在一处修的改动（例如日志字段、baseline 复位）都不会变成"两条路径不一致"。
+         */
+        private fun performSave(form: ScriptForm) {
             _saving.value = true
             viewModelScope.launch {
                 try {
                     val payload =
                         ScriptFormValidation.toScript(
-                            form = current,
+                            form = form,
                             createdAt = createdAt,
                             updatedAt = 0L,
                             contentSha256 = null,
@@ -456,7 +557,7 @@ class ScriptEditorViewModel
                         }
 
                         is WriteResult.Failed -> {
-                            onWarning("SCRIPTS_SAVE_FAILED id=${current.id}: ${result.reason}")
+                            onWarning("SCRIPTS_SAVE_FAILED id=${form.id}: ${result.reason}")
                             // 表单**原样保留**：用户的输入不能因为一次写盘失败就消失。
                             emitMessage("保存失败：${result.reason}")
                         }
@@ -464,7 +565,7 @@ class ScriptEditorViewModel
                 } catch (cancellation: CancellationException) {
                     throw cancellation
                 } catch (error: Throwable) {
-                    onWarning("SCRIPTS_SAVE_CRASHED id=${current.id}: ${describe(error)}")
+                    onWarning("SCRIPTS_SAVE_CRASHED id=${form.id}: ${describe(error)}")
                     emitMessage("保存失败：${describe(error)}")
                 } finally {
                     // `finally` 而非成功路径：失败后必须能再保存（否则按钮永久禁用）。
@@ -1042,4 +1143,28 @@ private data class PermissionAndFlags(
     val loaded: Boolean,
     val busy: Boolean,
     val notice: String?,
+)
+
+/**
+ * `uiState` 的左侧输入组：**表单本身**（阶段 12c 分组）。
+ *
+ * `combine` 的具名重载最多五个流，而 `uiState` 在加入 `pendingDanger` 后有六个输入。
+ * 分组依据是**生命周期**而不是"凑数"：这三个都是"用户编辑中的表单及其校验结果"。
+ */
+private data class FormState(
+    val form: ScriptForm,
+    val loading: Boolean,
+    val errors: List<ScriptFormError>,
+)
+
+/**
+ * `uiState` 的右侧输入组：**这一次保存尝试的状态**（阶段 12c 分组）。
+ *
+ * 三者同属一条时间线：正在写库（`saving`）、上次装载失败（`loadError`，它挡住保存）、
+ * 待确认的危险指令（`pendingDanger`，它挂起保存）。
+ */
+private data class SaveState(
+    val saving: Boolean,
+    val loadError: ScriptLoadFailure?,
+    val pendingDanger: ScriptDangerPrompt?,
 )

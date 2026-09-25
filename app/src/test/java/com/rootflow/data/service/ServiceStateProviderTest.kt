@@ -1,8 +1,12 @@
 package com.rootflow.data.service
 
+import android.util.Log
+import com.rootflow.data.event.SafeModeSnapshot
 import com.rootflow.domain.event.EventSourceState
 import com.rootflow.domain.service.ForegroundState
 import dagger.Lazy
+import io.mockk.every
+import io.mockk.mockkStatic
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.ExperimentalCoroutinesApi
 import kotlinx.coroutines.cancel
@@ -30,9 +34,24 @@ import org.junit.jupiter.api.Test
  * 2. **未注册时如实报 `Idle` + 空列表**：不假装在跑，也不编造"未启动"的原因
  * 3. **无活锁**：`register()` 的有界追赶必须**收敛**（§9.4：无界轮询会让
  *    `advanceUntilIdle()` 永不返回），下面 `advanceUntilIdle()` 能返回本身就是断言
+ *
+ * ## ★ 必须自己打桩 `android.util.Log`（2026-09-25 补，勿删）
+ * 本类经由 `ForegroundServiceController` 调 `Log.i`（`register()` 每次都打），
+ * 而单测**没有**开 `returnDefaultValues`（`AGENT_PROTOCOL.md §5.10`）
+ * ⇒ 不打桩时单独跑必炸（`Method i in android.util.Log not mocked`）。
+ *
+ * 它此前"能跑过"是因为全量跑时别的类已经装了静态桩 ——
+ * **本类是这条纪律的第 5 个受害者**（前四个见 `AGENT_PROTOCOL.md §5.10` 的清单）。
+ * 之所以这次才发现：它只有在**单独**跑时才暴露，而本轮改动让它进入了被单独验证的名单。
  */
 @OptIn(ExperimentalCoroutinesApi::class)
 class ServiceStateProviderTest {
+    init {
+        mockkStatic(Log::class)
+        every { Log.i(any(), any()) } returns 0
+        every { Log.w(any(), any<String>()) } returns 0
+    }
+
     private val testDispatcher: TestDispatcher = StandardTestDispatcher()
     private val controllerScope = CoroutineScope(testDispatcher)
 
@@ -46,6 +65,10 @@ class ServiceStateProviderTest {
             circuitBreaker = Lazy { breaker },
             notifier = notifier,
             daemonSupervisor = RecordingDaemonSupervisor(),
+            // 阶段 12c 的两个新依赖：本类测的是"状态有没有如实发布给 UI"，
+            // 因此给记录型假件（它们的语义由 ForegroundServiceControllerTest 覆盖）。
+            keepAliveWatchdog = RecordingKeepAliveWatchdog(),
+            safeModeSnapshot = SafeModeSnapshot(),
             scope = controllerScope,
         )
 
@@ -223,6 +246,8 @@ class ServiceStateProviderTest {
             circuitBreaker = Lazy { breaker },
             notifier = FakeServiceNotifier(),
             daemonSupervisor = RecordingDaemonSupervisor(),
+            keepAliveWatchdog = RecordingKeepAliveWatchdog(),
+            safeModeSnapshot = SafeModeSnapshot(),
             scope = controllerScope,
         )
 
