@@ -119,6 +119,15 @@ android {
             )
             // 有签名材料就接上；没有则保持 AGP 默认（产出 unsigned，装不上）
             signingConfig = signingConfigs.findByName("release")
+            // ★ 关掉 AGP 自动塞进 APK 的 `META-INF/version-control-info.textproto`。
+            // 那里面写着本次构建的 git revision，而 release APK 是在一个**独立的开发仓库**
+            // （含项目状态文档、真机日志、设备标识，**从未推送**）里构建的
+            // ⇒ 打进 APK 就等于把一个私有仓库的 commit SHA 挂到公开 release 上。
+            // SHA 不可逆、在公开仓库里也查不到内容，但本仓库 README 声明
+            // 「是有意构建的干净快照、不含开发历史」，留着它就与那句话自相矛盾。
+            // 实测：加上这一行后该文件不再产出（APK 条目 163 → 162，字节数 -85）。
+            // ⚠️ 这段注释本身也会被发布 ⇒ **别在这里写任何本地绝对路径**。
+            vcsInfo.include = false
         }
     }
 
