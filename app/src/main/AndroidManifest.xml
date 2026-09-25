@@ -39,11 +39,25 @@
          不声明则无从上报，阶段 6 的 UI 也就无法给出正确的引导。 -->
     <uses-permission android:name="android.permission.REQUEST_IGNORE_BATTERY_OPTIMIZATIONS" />
 
+    <!-- ★★ 应用图标**必须挂在 `<application>` 上**。
+         `android:icon` / `android:roundIcon` 在这里代表"整个 App 的图标"——桌面、应用信息页、
+         最近任务都读它。只挂在 `<activity>` 上（下面那个）只影响"该 Activity 的图标"，
+         部分启动器认、**系统设置的应用信息页不认**。
+
+         ⚠️ 2026-09-25 修：此前**只有 `<activity>` 上有这两个属性**，`<application>` 上没有
+         ⇒ `aapt2 dump badging` 显示 `application: icon=''`，真机应用信息页显示的是
+         **系统默认图标**（蓝色网格 + 安卓机器人）。桌面看着正常只是因为部分启动器会回退到
+         launcher activity 的图标，把问题掩盖了。
+
+         解析链：`mipmap-anydpi-v26`（API 26+，adaptive 分层） > `mipmap-anydpi`（旧系统，已合成）。
+         两份 `ic_launcher` + 两份 `ic_launcher_round` **缺一个就会在对应路径上没图标**。 -->
     <application
         android:name=".RootFlowApp"
         android:allowBackup="false"
         android:enableOnBackInvokedCallback="true"
+        android:icon="@mipmap/ic_launcher"
         android:label="@string/app_name"
+        android:roundIcon="@mipmap/ic_launcher_round"
         android:supportsRtl="true"
         android:theme="@style/Theme.RootFlow">
 
@@ -54,12 +68,8 @@
              声明 adjustResize 后窗口会为 IME 让出空间，配合 Compose 侧的
              `Modifier.imePadding()`（见 `RootFlowMain` 的内容层）才能把焦点输入框顶到可见区。
              两者**缺一不可**：只写清单不写 imePadding，Compose 内容不会跟着让位。 -->
-        <!-- ★ 阶段 9：应用图标（自主设计，见 res/drawable/ic_launcher_foreground.xml 的设计理念）。
-             两个属性都显式声明，**不要删任何一个**：
-             - `icon`       ：所有场景的默认图标；API 26+ 解析到 `mipmap-anydpi-v26/`（adaptive 分层）
-             - `roundIcon`  ：系统/app 请求"圆形图标"时的入口（部分启动器与系统 UI 会读它）
-             解析链：`mipmap-anydpi-v26` > `mipmap-anydpi` > `drawable/ic_launcher_legacy`，
-             四份资源（含 `ic_launcher_round` 两份）**缺一个就会在对应路径上没图标**。 -->
+        <!-- `<activity>` 上也写一份图标：少数启动器在解析 launcher activity 的图标时
+             **只看这里**、不回退到 `<application>`。两处都写才不会在不同启动器上表现不一。 -->
         <activity
             android:name=".MainActivity"
             android:exported="true"

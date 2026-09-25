@@ -93,7 +93,7 @@ RootFlow 是一个**自己的业务规则为零**的脚本宿主。它只做四�
 
 Kotlin 2.0 / Coroutines / Flow · Jetpack Compose + Material3 · Hilt · Room ·
 DataStore · libsu（唯一 root 通道）· Haze（毛玻璃）。
-全程**纯 JVM 单元测试**（1006 条），不依赖 `androidTest` / Robolectric。
+全程**纯 JVM 单元测试**（1039 条），不依赖 `androidTest` / Robolectric。
 
 ---
 
@@ -153,7 +153,7 @@ RootFlow 要求 **root 权限**，而它的功能就是**以 root 身份执行�
 **要求**：JDK 21 · Android SDK（compileSdk 见 `app/build.gradle.kts`）· 一台已 root 的设备
 
 ```bash
-# 单元测试（纯 JVM，1006 条，约 30 秒）
+# 单元测试（纯 JVM，1039 条，约 30 秒）
 ./gradlew :app:testDebugUnitTest
 
 # lint（ktlint）
@@ -180,7 +180,8 @@ RootFlow 要求 **root 权限**，而它的功能就是**以 root 身份执行�
 
 ## 真机验证状态（诚实清单）
 
-开发与验证环境：**OnePlus 8 / Android 15 (API 35) / APatch / SELinux Enforcing**。
+开发与验证环境：**OnePlus 15 (PLK110) / Android 16 (API 36) / Magisk / SELinux Enforcing**。
+（早期阶段 6a–10 的验证在 OnePlus 8 / Android 15 (API 35) / APatch 上完成。）
 
 **已验证**（每条都有真机日志证据）：
 
@@ -190,6 +191,16 @@ RootFlow 要求 **root 权限**，而它的功能就是**以 root 身份执行�
 - 数据迁移 v1 → v2（26 项逐条核对，旧表改名备份不删）
 - 熔断六步、bootloop 兜底、安全模式恢复
 - 前台服务生命周期、通知栏文案
+- **常驻脚本的存活时长与进程组终止**（`v1.4.4`）：
+  `DAEMON_EXITED runMillis=56355 stable=true`（修复前恒为 `0`）；
+  `.rf_pgid_<runId>` / `ipc/<runId>.q` / `/tmp/.rf_err_<runId>` 与日志里的 `runId` **逐字符一致**；
+  点「立即熔断」⇒ `terminated=1`、脚本进程 3 → 0
+- **熔断后退出安全模式会重新拉起常驻监管**（`v1.4.4`）：
+  退出后 **38 毫秒**即 `DAEMON_SUPERVISION_ADDED` → `RUN_ACCEPTED` → `DAEMON_STARTED`
+- **应用图标与设置页权限总览的观感**（`v1.4.5`）：
+  桌面与应用详情页都显示新图标，`aapt2 dump badging` 的 `application-icon-*` 七档密度全部命中
+  （修复前 `<application>` 上根本没有 `icon`，这一项一直是空的，系统设置里显示的是系统默认图标）；
+  权限总览的八张卡片单行等高，语义图标与状态胶囊正常
 
 **未验证 —— 请不要当成"已验过"**：
 
@@ -197,11 +208,12 @@ RootFlow 要求 **root 权限**，而它的功能就是**以 root 身份执行�
    （`EVENT_DELIVERED` / `EVENT_NOT_RUNNING` / `EVENT_NO_READER` 都有真机日志），
    但"脚本里 `read` 成功"这一步**没在真机上跑通**
    （开发设备只有中文输入法，正文无法经 adb 注入）
-2. **`runMillis`（存活时长）修复**：机制由单测以虚拟时间精确覆盖，**未单独做真机验证**
-3. **`boot` 事件的完整投递**：宿主会给它 6 秒重试窗口，但真机上没拿到
+2. **`boot` 事件的完整投递**：宿主会给它 6 秒重试窗口，但真机上没拿到
    `EVENT_BOOT_DELIVERED`（测试脚本活 200ms、短于重试间隔）
-4. **`always_run` chip**：仍是 UI 入口但已无实际作用（常驻与否现由「运行方式」决定），
+3. **`always_run` chip**：仍是 UI 入口但已无实际作用（常驻与否现由「运行方式」决定），
    是否移除尚未决定
+4. **底栏与主页的观感**（毛玻璃强度、标签字号、服务卡配色）：
+   只过过模拟器逐像素取证，**未经真机肉眼确认**
 
 ---
 
@@ -209,14 +221,11 @@ RootFlow 要求 **root 权限**，而它的功能就是**以 root 身份执行�
 
 | 文件 | 内容 |
 |---|---|
-| `REQUIREMENTS.md` | 需求原文 |
-| `PROJECT_STATE.md` | **跨会话冷启动入口**：全部阶段记录、决策留档、环境约束、偏离项 |
-| `docs/总开关机制-方案.md` | 总开关重构的完整设计（含阶段表与验收点） |
-| `docs/总开关重构-进度交接.md` | 逐轮交接：真机证据、踩过的坑、**未验部分的如实登记** |
-| `docs/总开关重构-迁移报告.md` | v1 → v2 数据迁移的 26 项逐条核对 |
 | `docs/usage-guide.md` | **面向使用者的教程**（从这里开始） |
-| `AGENT_PROTOCOL.md` | 本项目的 AI 协作协议（协程纪律、判读规范、文档纪律） |
-| `STAGE*-PLAN.md` / `STAGE*-DEVICE-VERIFICATION.md` | 各阶段的计划与真机验证记录 |
+
+> 开发期的过程文档（各阶段计划、真机验证记录、进度交接、项目状态、AI 协作协议等）
+> **不在本仓库**。本仓库是**有意构建的干净快照**——由开发仓库同步而来，只交付产品本身
+> 与面向使用者的说明；它不含开发历史，也不含任何真机截图。
 
 ---
 
@@ -230,7 +239,7 @@ RootFlow 要求 **root 权限**，而它的功能就是**以 root 身份执行�
 
 **但它不是"AI 随手写的一坨"**，这一点可以通过仓库本身检验：
 
-- **1006 条单元测试，0 失败**（纯 JVM，无 `androidTest` / Robolectric）
+- **1039 条单元测试，0 失败**（纯 JVM，无 `androidTest` / Robolectric）
 - 每一条真机结论都附**可复现的判据**（结构化日志 + 具体命令）
 - 开发过程中发现的**每一个真缺陷都留档**：现象、根因、修法、以及为什么那样修
 - 走错的路也留档（例如把事件源启停从"无条件全启"改成"按需启停"之后，

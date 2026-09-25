@@ -1,16 +1,27 @@
 <?xml version="1.0" encoding="utf-8"?>
 <!--
-  RootFlow 图标（**无版本限定符**，API < 26 与部分第三方图标读取路径）—— 阶段 9
+  RootFlow 图标（**无版本限定符**）—— 阶段 9 遗留，当前 `minSdk = 26` 下**永不生效**
 
-  ## 为什么是 `layer-list` 而不是 `<inset>` 包 vector
-  前景已经换成 PNG（见 `mipmap-anydpi-v26/ic_launcher.xml` 的说明：手写标志
-  无法在无矢量化工具的环境里忠实还原）。旧系统不认 adaptive icon 的**分层**语义，
-  必须给一张**已合成**的完整图 ⇒ 用 `layer-list` 把"品牌青底色 + 白色图形"叠起来，
-  效果等于合成图，且不需要再存一份"整图"PNG。
+  ## 现状：死资源
+  `app/build.gradle.kts` 里 `minSdk = 26` ⇒ 所有目标设备都满足 `-v26` 限定符，
+  Android 按"最具体的限定符"取胜，**永远选中** `mipmap-anydpi-v26/`（adaptive 分层、
+  形状交给系统遮罩），本文件不会被读取。
+  实测印证：release APK 经 `optimizeReleaseResources` 后 `mipmap/ic_launcher` 只剩
+  `(anydpi)` 一项，内容即 v26 版的 `adaptive-icon` —— 本文件被当死资源剔除了。
 
-  ## 与 v26 版的关系
-  Android 按"最具体的限定符"取胜：API 26+ 选中 `mipmap-anydpi-v26/`（分层，系统遮罩），
-  其余落回本文件（已合成）。两者**必须同时存在**。
+  ## 为什么还留着
+  万一将来把 `minSdk` 降到 26 以下，旧系统不认 adaptive 的**分层**语义，必须喂一张
+  **已合成**的整图。这里用 `layer-list` 把"底色 + 前景"叠起来，省掉再存一份整图 PNG。
+
+  ## ⚠️ 它不等价于桌面效果
+  前景 PNG 是把图形缩到 108dp 画布中央 **72dp 安全区**、四周补同色底色的版本
+  （见 `mipmap-anydpi-v26/ic_launcher.xml`）。72dp 安全区是为"系统遮罩会裁掉外圈"
+  而留的余量；没有遮罩的旧系统会直接铺满显示 ⇒ 图形看上去会比正常小一圈。
+  真要启用本文件，得另存一份"内容铺满 108dp"的前景。
+
+  ## 形状
+  文件自身不含圆角或圆形裁剪 —— 自适应图标的形状由系统遮罩决定，应用侧自己裁
+  会在方形遮罩的设备上露出四角底色。`ic_launcher_round.xml` 同理。
 -->
 <layer-list xmlns:android="http://schemas.android.com/apk/res/android">
     <item android:drawable="@color/rootflow_launcher_background" />

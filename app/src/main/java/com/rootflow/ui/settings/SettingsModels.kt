@@ -43,6 +43,20 @@ data class PermissionRow(
 ) {
     /** 是否已授予（`NOT_APPLICABLE` **不算**已授予）。 */
     val granted: Boolean get() = grant == PermissionGrant.GRANTED
+
+    /**
+     * 卡片标题：**去掉括号说明**后的权限名（`开机自启（接收 BOOT_COMPLETED）` → `开机自启`）。
+     *
+     * ## 为什么是派生属性、而不是去改 [label]
+     * [label] 仍是"一行式"的完整标签，**「Root 驻留」那张卡片还在用它**（本次不动那处）。
+     * 本属性只服务权限总览的卡片，因此不改数据源、也不牵动别的调用方。
+     *
+     * ## 括号里那截为什么**不再显示**
+     * 它一度作为卡片副标题（灰字第二行），但用户 2026-09-25 明确要求去掉：
+     * 「把下面的灰字详细给移除掉，不然感觉有点乱」。卡片因此变成**单行**，
+     * 8 张也随之等高。
+     */
+    val title: String get() = label.substringBefore("（").trim()
 }
 
 /** 恢复动作的一个选项（两种模式各一条，见 `RestoreMode`）。 */

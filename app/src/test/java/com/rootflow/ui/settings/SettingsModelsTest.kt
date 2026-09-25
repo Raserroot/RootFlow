@@ -228,6 +228,44 @@ class SettingsModelsTest {
         assertTrue(at31.getValue(AndroidPermission.SCHEDULE_EXACT_ALARM).canOpenSettings)
     }
 
+    /**
+     * ★ 卡片标题 = 去掉括号说明的权限名（11e 补丁8，2026-09-25 精简）。
+     *
+     * ## 为什么要钉住
+     * 8 项权限的标签**格式并不统一** —— 4 项带全角括号（`开机自启（接收 BOOT_COMPLETED）`）、
+     * 4 项不带（`网络状态读取`）。卡片要的是一个**干净的权限名**，两种格式都得处理对：
+     * 带括号的把括号那段去掉，不带括号的原样保留。
+     *
+     * ## 括号里那截现在去哪了
+     * **不显示**。它一度是卡片副标题（灰字第二行），用户 2026-09-25 要求移除
+     * （原话：「把下面的灰字详细给移除掉，不然感觉有点乱」）。
+     * 因此本测试不再断言它，`PermissionRow` 也不再需要 `detail` 属性 —— 卡片是单行。
+     */
+    @Test
+    fun `卡片标题去掉括号说明`() {
+        val rows = SettingsProjections.permissionRows(states = emptyMap(), sdkInt = 35).associateBy { it.permission }
+
+        assertEquals("开机自启", rows.getValue(AndroidPermission.RECEIVE_BOOT_COMPLETED).title)
+        assertEquals("通知", rows.getValue(AndroidPermission.POST_NOTIFICATIONS).title)
+        assertEquals("前台服务", rows.getValue(AndroidPermission.FOREGROUND_SERVICE_SPECIAL_USE).title)
+
+        // 不带括号的：标题就是整条标签
+        assertEquals("网络状态读取", rows.getValue(AndroidPermission.ACCESS_NETWORK_STATE).title)
+        assertEquals("精确闹钟", rows.getValue(AndroidPermission.SCHEDULE_EXACT_ALARM).title)
+        assertEquals(
+            "电池优化白名单",
+            rows.getValue(AndroidPermission.REQUEST_IGNORE_BATTERY_OPTIMIZATIONS).title,
+        )
+    }
+
+    @Test
+    fun `卡片标题绝不为空且不残留括号`() {
+        val rows = SettingsProjections.permissionRows(states = emptyMap(), sdkInt = 35)
+        assertTrue(rows.none { it.title.isBlank() }, "标题不得为空（空标题的卡片等于没说明这是哪项权限）")
+        assertTrue(rows.none { it.title.contains("（") }, "标题里不得残留开括号")
+        assertTrue(rows.none { it.title.contains("）") }, "标题里不得残留闭括号")
+    }
+
     @Test
     fun `待授权清单只包含未授予且有可跳页的项`() {
         val states =

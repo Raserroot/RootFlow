@@ -54,23 +54,27 @@ android {
         applicationId = "com.rootflow.app"
         minSdk = 26
         targetSdk = 34
-        // ★ 阶段 11e（此前 1.4.3 / code 11）。用户第九~十二条反馈 + 真机验证发现：
-        //   ① 「服务卡跟总开关调换位置」→ HomeScreen 的两个 item 交换，服务卡提到最顶。
-        //   ② 「服务卡完全照 LSPosed 复刻」→ ServiceStatusCard 重写为两行 + 右侧大图标
-        //      右下角溢出被裁 + 强调色 5% 叠 surface，参数逐像素取自参照截图。
-        //   ③ ★ 真机 bug（用户报的）：「常驻脚本被误判「活了 0 毫秒、连崩 5 次」」——
-        //      两处修复：`LogPipeline.startRun` 交出内部收集作业（`RunSession.job` 直接用它，
-        //      不再包那层会秒级完成的 `scope.launch`）；`ScriptRuntime.run` 增 `runId` 形参
-        //      （`handle.id` 与日志 / `.rf_pgid_*` / FIFO 名统一成一个值）。
-        //   ④ ★ 真机 bug（③ 的验证过程中发现）：「熔断后退出安全模式，常驻脚本不回来」——
-        //      `onSafeModeRestore` 补 `daemonSupervisor.start()`（与 alert 的 `stop()` 配对）。
-        //   ⑤ 「toast 被导航栏遮住」→ 三个页面的 `snackbarHost` 让出 `NavBarReservedSpace`。
+        // ★ 阶段 11e 补丁7~10（此前 1.4.4 / code 12）。用户第十三条反馈起的四轮改动：
+        //   ① 「设置页最底部加一张关于卡片，点击进我的 GitHub 仓库」→ `AboutSection`
+        //      收敛成一行可点项，跳 `PROJECT_HOME_URL`（`ui/settings/SettingsScreen.kt`）。
+        //   ② 「权限总览照这个设计重做」→ `PermissionsSection` 从纯文字列表改成卡片列：
+        //      每项 = 语义图标 + 权限名 + 右侧状态胶囊（已授予**绿** / 未授予**橙**）。
+        //      用户裁定未授予用橙色（"没授权"不等于"出错了"），并**去掉具体用途**
+        //      （"不然显得有点乱"）⇒ `PermissionRow.detail` 随之删除。
+        //   ③ 「单一的对钩太普通，每项权限给不同的图标」→ 8 个 ImageVector 从
+        //      `material-icons-extended` 的字节码里逐个取出、落进
+        //      `ui/settings/PermissionIcons.kt`。代价对照：APK 只涨 16 KB，
+        //      而加那条依赖要 +35 MB。
+        //   ④ 「把原本的 icon 图标改成这个」→ 换应用图标。**顺带挖出一个一直存在的真缺陷**：
+        //      `android:icon` / `roundIcon` 原本只挂在 `<activity>` 上、`<application>` 是空的
+        //      ⇒ `aapt2 dump badging` 一直报 `icon=''`，系统设置里显示的是系统默认图标，
+        //      只是被"部分启动器回退到 launcher activity 图标"掩盖了。已搬到 `<application>`。
         //   versionName 会经 BuildConfig 显示在主页「App 版本」与设置页「关于」，
         //   因此改这里就等于改了真机上看到的版本号 —— 发布时**必须**与 tag 一致。
-        //   ⚠️ ③ ④ **已在真机（OnePlus PLK110 / Android 16）实测通过**；
-        //      ① ② ⑤ 只过了模拟器验证 ⇒ tag 仍带 `-unverified`。
-        versionCode = 12
-        versionName = "1.4.4"
+        //   ⚠️ ③ ④ **已在真机（OnePlus PLK110 / Android 16）实测通过**（桌面与应用详情页
+        //      图标、权限总览观感都看过）；①② 的跳转分支只过了构建 ⇒ tag 仍带 `-unverified`。
+        versionCode = 13
+        versionName = "1.4.5"
 
         testInstrumentationRunner = "androidx.test.runner.AndroidJUnitRunner"
     }

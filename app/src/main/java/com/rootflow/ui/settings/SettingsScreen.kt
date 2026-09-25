@@ -6,7 +6,12 @@ import android.content.Intent
 import android.net.Uri
 import android.os.Build
 import android.provider.Settings
+import androidx.compose.foundation.background
+import androidx.compose.foundation.border
+import androidx.compose.foundation.clickable
+import androidx.compose.foundation.isSystemInDarkTheme
 import androidx.compose.foundation.layout.Arrangement
+import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.Spacer
@@ -14,11 +19,18 @@ import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.height
 import androidx.compose.foundation.layout.padding
+import androidx.compose.foundation.layout.size
+import androidx.compose.foundation.layout.width
 import androidx.compose.foundation.rememberScrollState
+import androidx.compose.foundation.shape.CircleShape
+import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.foundation.verticalScroll
+import androidx.compose.material.icons.Icons
+import androidx.compose.material.icons.filled.KeyboardArrowRight
 import androidx.compose.material3.AlertDialog
 import androidx.compose.material3.FilterChip
 import androidx.compose.material3.HorizontalDivider
+import androidx.compose.material3.Icon
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.OutlinedButton
 import androidx.compose.material3.Scaffold
@@ -36,7 +48,11 @@ import androidx.compose.runtime.rememberCoroutineScope
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
+import androidx.compose.ui.draw.clip
+import androidx.compose.ui.graphics.Color
+import androidx.compose.ui.graphics.vector.ImageVector
 import androidx.compose.ui.platform.LocalContext
+import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
 import androidx.lifecycle.Lifecycle
 import androidx.lifecycle.compose.LifecycleEventEffect
@@ -46,6 +62,7 @@ import com.rootflow.BuildConfig
 import com.rootflow.domain.event.AndroidPermission
 import com.rootflow.domain.event.EventSourceState
 import com.rootflow.domain.event.EventSourceStatus
+import com.rootflow.domain.event.PermissionGrant
 import com.rootflow.domain.event.RestoreMode
 import com.rootflow.domain.event.SettingsTargets
 import com.rootflow.domain.event.TripReason
@@ -151,6 +168,29 @@ internal fun SettingsScreen(
         }
     }
 
+    /**
+     * 打开**项目主页**（GitHub）。
+     *
+     * ## 为什么失败要提示（与 [openSettingsPage] 同款纪律）
+     * 设备上没装浏览器、或该 Intent 被厂商裁掉时，`startActivity` 会抛
+     * `ActivityNotFoundException`。静态失败在这里尤其糟：用户点了「项目主页」
+     * 什么都没发生，只会以为这个入口是坏的。
+     */
+    fun openProjectHome() {
+        val launched =
+            runCatching {
+                context.startActivity(
+                    Intent(Intent.ACTION_VIEW, Uri.parse(PROJECT_HOME_URL))
+                        .addFlags(Intent.FLAG_ACTIVITY_NEW_TASK),
+                )
+            }.isSuccess
+        if (!launched) {
+            scope.launch {
+                snackbarHostState.showSnackbar("无法打开浏览器：$PROJECT_HOME_URL")
+            }
+        }
+    }
+
     Scaffold(
         modifier = modifier.fillMaxSize(),
         // ★ 11e 补丁6：`SnackbarHost` 是 `Scaffold` 的**浮层**，与 FAB 同一个坑 ——
@@ -208,13 +248,19 @@ internal fun SettingsScreen(
                 onRequestCleanup = { confirmingCleanup = true },
             )
 
+            // ★ 11e 补丁9：权限总览**独立成卡**（用户要求），位置在「日志」与「关于」之间
+            //   —— 「关于」压轴。摘要行也跟着它走（见 `PermissionsSection` 的 KDoc）。
+            PermissionsSection(
+                rows = permissionRows,
+                onOpenSettings = ::openSettingsPage,
+            )
+
             AboutSection(
                 versionName = BuildConfig.VERSION_NAME,
-                rows = permissionRows,
                 residue = state.residue,
                 busy = state.busy,
-                onOpenSettings = ::openSettingsPage,
                 onRequestResidueCleanup = { confirmingResidue = true },
+                onOpenProjectHome = ::openProjectHome,
             )
 
             // ★ 阶段 7（方向 A）：底栏的让位从「内容层整体 padding」下移到**本滚动容器**。
@@ -510,19 +556,31 @@ private fun LogSection(
     }
 }
 
-// ── 关于（需求 §6 + §8 的权限总览） ───────────────────────────────────────────
+// ── 权限总览（11e 补丁9：从「关于」里拆出来的独立卡片） ────────────────────────
 
+/**
+ * 权限总览：摘要行 + 8 张卡片。
+ *
+ * ## 为什么从「关于」里拆出来（用户 2026-09-25 要求）
+ * 它原本长在「关于」卡片里（那张卡同时装着版本号、卸载残留、权限总览、项目主页四件事）。
+ * 拆开的理由不只是"太长"：**这两块回答的是不同问题** ——
+ * 权限总览是"这台设备还缺什么"（要能一眼扫），关于是"这个 App 是什么"（查阅式）。
+ *
+ * ## 为什么摘要行也跟着搬过来
+ * 「未授予的权限」本来就是这 8 项的汇总；留在「关于」会让两张卡都在讲权限。
+ * 搬过来之后本卡的结构是「标题 → 摘要 → 逐项」：一句话说完，再展开。
+ */
 @Composable
-private fun AboutSection(
-    versionName: String,
+private fun PermissionsSection(
     rows: List<PermissionRow>,
-    residue: ResidueScan?,
-    busy: Boolean,
     onOpenSettings: (AndroidPermission) -> Unit,
-    onRequestResidueCleanup: () -> Unit,
 ) {
-    SectionCard(title = "关于") {
-        KeyValueRow(label = "应用版本", value = versionName)
+    SectionCard(title = "权限总览") {
+        Text(
+            text = "与 AndroidManifest 声明严格一致",
+            style = MaterialTheme.typography.bodySmall,
+            color = MaterialTheme.colorScheme.onSurfaceVariant,
+        )
         KeyValueRow(
             label = "未授予的权限",
             value =
@@ -531,6 +589,31 @@ private fun AboutSection(
                     .joinToString(separator = "、") { it.label }
                     .ifEmpty { "无" },
         )
+
+        HorizontalDivider()
+
+        // 用 `Column` + `spacedBy` 而不是给每张卡片写下边距：间距是"卡片之间"的关系，
+        // 写在容器上才有唯一出处（与 `SectionCard` 把圆角收在一处是同款理由）。
+        Column(verticalArrangement = Arrangement.spacedBy(8.dp)) {
+            rows.forEach { row ->
+                PermissionCardRow(row = row, onOpenSettings = onOpenSettings)
+            }
+        }
+    }
+}
+
+// ── 关于（需求 §6 的版本信息 + §8 的卸载残留） ────────────────────────────────
+
+@Composable
+private fun AboutSection(
+    versionName: String,
+    residue: ResidueScan?,
+    busy: Boolean,
+    onRequestResidueCleanup: () -> Unit,
+    onOpenProjectHome: () -> Unit,
+) {
+    SectionCard(title = "关于") {
+        KeyValueRow(label = "应用版本", value = versionName)
 
         HorizontalDivider()
 
@@ -560,17 +643,36 @@ private fun AboutSection(
         )
 
         HorizontalDivider()
-        Text(
-            text = "权限总览（与 AndroidManifest 声明严格一致）",
-            style = MaterialTheme.typography.bodySmall,
-            color = MaterialTheme.colorScheme.onSurfaceVariant,
-        )
-        rows.forEach { row ->
-            PermissionActionRow(
-                row = row,
-                actionLabel = "去设置",
-                onOpenSettings = onOpenSettings,
-                compact = true,
+
+        // ★ 11e 补丁7：项目主页入口（用户提议）。
+        //   做成**可点整行**而不是按钮：本卡片其余内容都是「标签 : 值」的行式阅读节奏，
+        //   插一个按钮进去会打断它；而"整行可点 + 右侧箭头"是同一节奏的自然延伸
+        //   （下面的 `PermissionActionRow` 同样是"行 + 行尾动作"，不是一个独立按钮）。
+        Row(
+            modifier =
+                Modifier
+                    .fillMaxWidth()
+                    .clip(RoundedCornerShape(8.dp))
+                    .clickable(onClick = onOpenProjectHome)
+                    .padding(vertical = 6.dp),
+            verticalAlignment = Alignment.CenterVertically,
+        ) {
+            Column(modifier = Modifier.weight(1f)) {
+                Text(
+                    text = "项目主页",
+                    style = MaterialTheme.typography.bodyMedium,
+                    color = MaterialTheme.colorScheme.onSurfaceVariant,
+                )
+                Text(
+                    text = PROJECT_HOME_URL,
+                    style = MaterialTheme.typography.bodySmall,
+                    color = MaterialTheme.colorScheme.primary,
+                )
+            }
+            Text(
+                text = "›",
+                style = MaterialTheme.typography.titleMedium,
+                color = MaterialTheme.colorScheme.onSurfaceVariant,
             )
         }
     }
@@ -623,6 +725,198 @@ private fun SettingSwitchRow(
         )
     }
 }
+
+// ── 权限总览的卡片式行（11e 补丁8） ─────────────────────────────────────────────
+
+/**
+ * 「关于」里权限总览的一行 —— **卡片式**（用户 2026-09-25 参照 OS々 的形态指定）。
+ *
+ * ## 形态
+ * ```
+ * ┌──────────────────────────────────────────────┐
+ * │ (✔)  开机自启                      [已授予]  › │   ← 圆底图标 / 标题 / 胶囊 / 箭头
+ * │      接收 BOOT_COMPLETED                      │   ← 副标题（没有括号的权限不显示这行）
+ * └──────────────────────────────────────────────┘
+ * ```
+ * **整行可点** —— 不再单独放「去设置」按钮（参照 App 就是这么做的，且省掉一个常驻控件）。
+ *
+ * ## 与 [PermissionActionRow] 的分工（**两处互不替代**）
+ * - [PermissionActionRow]：「Root 驻留」那张卡片用的**行内按钮**形态，本次**不动**
+ * - 本组件：「关于」的权限总览专用
+ * 不合并的理由是信息密度不同：Root 驻留是"配合上面的摘要读"，一行越短越好；
+ * 权限总览是 8 项并排自检，需要能一眼扫出哪几项没到位。
+ *
+ * ## 颜色（用户指定）
+ * 已授予 = **绿**，未授予 = **橙**，`NOT_APPLICABLE` = 中性灰。
+ *
+ * ## 为什么未授予用橙而不是红
+ * 用户原话「未授权橙色吧」，理由也站得住：**"没授权"不等于"出错了"**
+ * —— 它只是"还没做"，与 `error` 语义（失败）不是一回事。红色留给真正的失败。
+ *
+ * ## 没有可跳页时不可点、也不画箭头
+ * `canOpenSettings` 为 `false`（安装即授予的权限、或该 SDK 档位没有对应设置页）时，
+ * 不加 `clickable`：给一个点了没反应的入口等于骗用户（决策 9）。
+ */
+@Composable
+private fun PermissionCardRow(
+    row: PermissionRow,
+    onOpenSettings: (AndroidPermission) -> Unit,
+) {
+    val accent = permissionAccent(row.grant)
+    val shape = RoundedCornerShape(PERMISSION_CARD_CORNER)
+    val clickable = row.canOpenSettings
+
+    Row(
+        modifier =
+            Modifier
+                .fillMaxWidth()
+                .clip(shape)
+                // ★ 用 `clickable(enabled = …)` 而不是条件构造 Modifier：
+                //   两者视觉完全一致（禁用态不产生涟漪），但前者让"这行点不点得动"
+                //   在代码里是一个显式参数，而不是藏在 `if` 的两个分支里。
+                //   代价：禁用态在无障碍语义上仍被标为可点击 —— 而 `canOpenSettings = false`
+                //   的只有"安装即授予"的那几项，它们本来也没有可跳的页面，取舍可接受。
+                .clickable(enabled = clickable) { onOpenSettings(row.permission) }
+                .background(MaterialTheme.colorScheme.surface)
+                .border(
+                    width = 1.dp,
+                    color = MaterialTheme.colorScheme.outlineVariant,
+                    shape = shape,
+                ).padding(horizontal = 12.dp, vertical = 12.dp),
+        verticalAlignment = Alignment.CenterVertically,
+    ) {
+        Box(
+            modifier =
+                Modifier
+                    .size(PERMISSION_ICON_BADGE)
+                    .clip(CircleShape)
+                    .background(accent.copy(alpha = PERMISSION_ACCENT_BG_ALPHA)),
+            contentAlignment = Alignment.Center,
+        ) {
+            Icon(
+                // ★ 11e 补丁9：用**每项自己的**语义图标（原来是统一的 CheckCircle / Warning）。
+                //   状态改由 `tint`（绿 / 橙）与右侧胶囊承担。
+                imageVector = permissionIcon(row.permission),
+                // 纯装饰：右边的胶囊已经把状态说清楚了，念两遍是噪音。
+                contentDescription = null,
+                tint = accent,
+                modifier = Modifier.size(PERMISSION_ICON_SIZE),
+            )
+        }
+
+        Spacer(modifier = Modifier.width(10.dp))
+
+        Text(
+            text = row.title,
+            style = MaterialTheme.typography.titleSmall,
+            color = MaterialTheme.colorScheme.onSurface,
+            // ★ 单行 + 省略：真机（density 560）实测「电池优化白名单」7 个字会把标题**折行**，
+            //   于是卡片高矮不一。这里不靠"再缩字号"解决（`titleSmall` 16sp 已是本页正文档），
+            //   而是**保证绝不折行** —— 装不下就省略号，卡片高度因此恒定。
+            maxLines = 1,
+            overflow = TextOverflow.Ellipsis,
+            modifier = Modifier.weight(1f),
+        )
+
+        Spacer(modifier = Modifier.width(8.dp))
+
+        Box(
+            modifier =
+                Modifier
+                    .clip(RoundedCornerShape(percent = 50))
+                    .background(accent.copy(alpha = PERMISSION_ACCENT_BG_ALPHA))
+                    .padding(horizontal = 8.dp, vertical = 4.dp),
+        ) {
+            Text(
+                text = row.statusText,
+                style = MaterialTheme.typography.labelMedium,
+                color = accent,
+            )
+        }
+
+        if (clickable) {
+            Icon(
+                imageVector = Icons.Filled.KeyboardArrowRight,
+                contentDescription = null,
+                tint = MaterialTheme.colorScheme.onSurfaceVariant,
+                modifier = Modifier.size(PERMISSION_CHEVRON_SIZE),
+            )
+        }
+    }
+}
+
+/**
+ * 权限 → **它自己的图标**（11e 补丁9，用户要求）。
+ *
+ * ## 为什么每项一个图形，而不是统一的对勾 / 感叹号
+ * 用户原话：「单一的【✔】太普通了……可以按照每个不同的权限给不同的那个图标」。
+ * 更实际的收益：8 项并排时，**图形比中文标签更快被扫到** —— "哪一项是网络、哪一项是电池"
+ * 不需要逐行读字。
+ *
+ * ## 那么"授没授"由什么表达
+ * **颜色**（绿 / 橙，见 [permissionAccent]）与**右侧胶囊**（已授予 / 未授予）。
+ * 也就是把原来"图标兼表状态"拆成两件事：**图形说是什么，颜色说怎么样**。
+ *
+ * ## 图标从哪来
+ * `PermissionIcons.kt` —— 从官方 `material-icons-extended` 提取的**逐字节一致**的图形
+ * （core 只有 49 个，没有电源 / 网络 / 闹钟 / 电池）。该文件头解释了为什么不直接引依赖。
+ */
+private fun permissionIcon(permission: AndroidPermission): ImageVector =
+    when (permission) {
+        AndroidPermission.RECEIVE_BOOT_COMPLETED -> PermissionIconBoot
+        AndroidPermission.ACCESS_NETWORK_STATE -> PermissionIconNetwork
+        AndroidPermission.POST_NOTIFICATIONS -> PermissionIconNotification
+        AndroidPermission.SCHEDULE_EXACT_ALARM -> PermissionIconAlarm
+        AndroidPermission.PACKAGE_USAGE_STATS -> PermissionIconUsage
+        AndroidPermission.FOREGROUND_SERVICE -> PermissionIconService
+        AndroidPermission.FOREGROUND_SERVICE_SPECIAL_USE -> PermissionIconServiceSpecial
+        AndroidPermission.REQUEST_IGNORE_BATTERY_OPTIMIZATIONS -> PermissionIconBattery
+    }
+
+/**
+ * 权限状态的强调色。
+ *
+ * ## 为什么写死色值，而不是用 MD3 的 `error` / `primary`
+ * 用户点名了配色（**绿 / 橙**），而 MD3 的语义色里没有"绿"这一档
+ * （`primary` 在本项目的默认配色下是紫色）。与 `NavBarPalette` 同一条纪律：
+ * **底栏与权限总览是本项目仅有的两处"用户点名了颜色"的地方**，其余界面仍完全跟随动态取色。
+ *
+ * ## 为什么深色档单独给
+ * `#2E7D32` 在深色表面上对比度不足（会糊成一片暗绿），因此深色档换亮一档。
+ * `NOT_APPLICABLE` 用 `onSurfaceVariant`：它既不是"已给"也不是"待给"，用状态色会误导。
+ */
+@Composable
+private fun permissionAccent(grant: PermissionGrant): Color {
+    val dark = isSystemInDarkTheme()
+    return when (grant) {
+        PermissionGrant.GRANTED -> if (dark) PERMISSION_GRANTED_DARK else PERMISSION_GRANTED_LIGHT
+        PermissionGrant.DENIED -> if (dark) PERMISSION_DENIED_DARK else PERMISSION_DENIED_LIGHT
+        PermissionGrant.NOT_APPLICABLE -> MaterialTheme.colorScheme.onSurfaceVariant
+    }
+}
+
+/** 权限卡片的圆角（对齐参照 App 的大圆角）。 */
+private val PERMISSION_CARD_CORNER = 20.dp
+
+/** 左侧图标容器的直径（真机实测收到 32dp 才够中间列放下 7 个汉字的权限名）。 */
+private val PERMISSION_ICON_BADGE = 32.dp
+
+/** 状态图标本身的尺寸（容器 32dp 时按 18dp 更协调）。 */
+private val PERMISSION_ICON_SIZE = 18.dp
+
+/** 右侧跳转箭头的尺寸。 */
+private val PERMISSION_CHEVRON_SIZE = 18.dp
+
+/** 强调色作为底（圆底 / 胶囊）时的 alpha：够看出色相，又不至于盖过白底。 */
+private const val PERMISSION_ACCENT_BG_ALPHA = 0.14f
+
+/** 已授予（浅色 / 深色）。 */
+private val PERMISSION_GRANTED_LIGHT = Color(0xFF2E7D32)
+private val PERMISSION_GRANTED_DARK = Color(0xFF81C784)
+
+/** 未授予（浅色 / 深色）。 */
+private val PERMISSION_DENIED_LIGHT = Color(0xFFE65100)
+private val PERMISSION_DENIED_DARK = Color(0xFFFFB74D)
 
 /**
  * 权限行：状态 + （可选）跳转按钮。
@@ -817,6 +1111,17 @@ private fun ResidueConfirmDialog(
 
 /** 动态取色的最低 API（`Build.VERSION_CODES.S`，此处写字面量以免引入版本常量分支）。 */
 private const val DYNAMIC_COLOR_MIN_SDK: Int = 31
+
+/**
+ * 项目主页（用户 2026-09-25 提议加到设置页「关于」卡片里）。
+ *
+ * 指向**公开仓库** —— 即本 App 的 Release 发布源。
+ *
+ * ⚠️ **不要**改成开发仓库的路径：两者内容不同。公开仓库是**有意构建的干净快照**，
+ * 不含开发期的过程文档（`PROJECT_STATE.md` / `AGENT_PROTOCOL.md` / `STAGE*-PLAN.md` 等），
+ * 也不含任何真机截图。
+ */
+private const val PROJECT_HOME_URL: String = "https://github.com/Raserroot/RootFlow"
 
 // ★ 阶段 11e：`GRAPHICS_CAPABILITY_ASSUMED_OK` 随「液态玻璃（实验）」开关一并摘除（用户指令）。
 //   那个写死的 `true` 只喂给 `GlassPolicy.decide(graphicsCapabilityOk = ...)`，而该调用点
