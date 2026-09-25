@@ -11,45 +11,27 @@ import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.height
 import androidx.compose.foundation.layout.imePadding
-import androidx.compose.foundation.layout.navigationBars
-import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.safeDrawing
 import androidx.compose.foundation.layout.windowInsetsPadding
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.runtime.Composable
-import androidx.compose.runtime.DisposableEffect
 import androidx.compose.runtime.getValue
-import androidx.compose.runtime.mutableIntStateOf
 import androidx.compose.runtime.remember
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.graphics.Brush
 import androidx.compose.ui.graphics.Color
-import androidx.compose.ui.graphics.RenderEffect
-import androidx.compose.ui.layout.onGloballyPositioned
-import androidx.compose.ui.layout.positionInRoot
 import androidx.compose.ui.platform.LocalContext
-import androidx.compose.ui.unit.IntSize
 import androidx.compose.ui.unit.dp
 import androidx.lifecycle.compose.collectAsStateWithLifecycle
 import androidx.lifecycle.viewmodel.compose.viewModel
-import com.rootflow.domain.glass.GlassParams
-import com.rootflow.domain.glass.GlassPolicy
-import com.rootflow.domain.glass.GlassTier
 import com.rootflow.domain.settings.BlurPolicy
 import com.rootflow.domain.settings.RootFlowSettings
-import com.rootflow.ui.component.AndroidGlassEffectFactory
 import com.rootflow.ui.component.FloatingNavBar
-import com.rootflow.ui.component.GlassEffectFactory
-import com.rootflow.ui.component.GlassLayer
-import com.rootflow.ui.component.LiquidGlassRenderer
 import com.rootflow.ui.home.HomeScreen
 import com.rootflow.ui.scripts.ScriptsTab
 import com.rootflow.ui.settings.SettingsScreen
-import com.rootflow.ui.theme.NavBarHeight
-import com.rootflow.ui.theme.NavBarHorizontalPadding
-import com.rootflow.ui.theme.NavBarVerticalPadding
 import com.rootflow.ui.theme.RootFlowTheme
 import dev.chrisbanes.haze.hazeSource
 import dev.chrisbanes.haze.rememberHazeState
@@ -148,18 +130,10 @@ internal fun RootFlowMain(
     //   所以"双写"只存在于这两处；早先注释里写的"同时交给 hazeSource"是错的，已更正。
     val hazeState = rememberHazeState(blurEnabled = blurSupported)
 
-    // ★ 阶段 7：三档判定（纯函数，`GlassTierTest` 穷举钉死）。
-    //   `graphicsCapabilityOk = true` 的口径与理由见 [GRAPHICS_CAPABILITY_ASSUMED_OK]。
-    val glassTier =
-        remember(settings.liquidGlassEnabled, blurSupported, isLowRamDevice) {
-            GlassPolicy.decide(
-                apiLevel = Build.VERSION.SDK_INT,
-                graphicsCapabilityOk = GRAPHICS_CAPABILITY_ASSUMED_OK,
-                liquidGlassEnabled = settings.liquidGlassEnabled,
-                lowRam = isLowRamDevice,
-                blurSupported = blurSupported,
-            )
-        }
+    // ★ 阶段 11e：**液态玻璃的装配点已整个移除**（用户指令）。
+    //   底栏此后只有毛玻璃一种材质 —— `HazeState` + `blurSupported` 就是它的全部依赖。
+    //   `GlassPolicy.decide(...)` / `GlassLayer` / `LiquidGlassRenderer` 不再被任何生产代码调用；
+    //   它们的实现与单测保留为「已评估、不参与生产」的记录（同 `NavBarElastic` 的处置）。
 
     // ★ 内容槽位：**同一份内容**既能画在正常位置、又能被画进玻璃层（只传一次、用两次）。
     //   它不新增任何状态：Composable 是纯渲染，两次绘制共用同一批 ViewModel（Activity 域）。
@@ -175,18 +149,9 @@ internal fun RootFlowMain(
         }
     }
 
-    // 胶囊顶边在**根坐标**里的 y（测量回填，见 `GlassLayer` 的 KDoc）。
-    // 初值 0 = "还没测到"：那时玻璃层什么都不画（首帧而已，下一帧就有值）。
-    var barTopInRootPx by remember { mutableIntStateOf(0) }
-
-    // 内容层原点在**根坐标**里的 y（= safeDrawing 的顶 inset）。玻璃层的对齐量要用它当基准
-    // —— **不是**屏幕高度：内容层自己就是从这一点往下画的（见 `GlassLayer` 的「坑 2」）。
-    var contentLayerOriginPx by remember { mutableIntStateOf(0) }
-
-    val renderer = remember { LiquidGlassRenderer(effectFactory = glassEffectFactory()) }
-    DisposableEffect(renderer) {
-        onDispose { renderer.release() }
-    }
+    // ★ 阶段 11e：`barTopInRootPx` / `contentLayerOriginPx` / `renderer` 三个状态
+    //   都是**为玻璃层服务的**（前者是它的对齐基准，后者是它的 effect 工厂），
+    //   随液态玻璃一并移除。内容层与底栏本身不需要它们 —— 后者只用 `hazeState` 采样。
 
     // ★ F1（真机暴露，勿删）：根容器必须自己铺满整块窗口。
     // `MaterialTheme` 只提供颜色值，**不绘制背景**；而 `MainActivity` 调了
@@ -216,12 +181,7 @@ internal fun RootFlowMain(
                     //   会把自己的消耗量累加进 `consumedWindowInsets`，排后面会让
                     //   `safeDrawing` 把 IME 高度也减掉一次（双重让位）。
                     .imePadding()
-                    .windowInsetsPadding(WindowInsets.safeDrawing)
-                    // 内容层原点（根坐标）：玻璃层把它当作"内容坐标系的原点"来对齐
-                    .onGloballyPositioned { coordinates ->
-                        val top = coordinates.positionInRoot().y.toInt()
-                        if (top != contentLayerOriginPx) contentLayerOriginPx = top
-                    },
+                    .windowInsetsPadding(WindowInsets.safeDrawing),
         ) {
             // ★★ 阶段 8.2：Tab 切换的横向滑动过渡（**只包内容，不碰底栏**）。
             //   方向跟随 Tab 顺序，判定是纯函数（`MainTabTransition.direction`，有单测）。
@@ -247,36 +207,17 @@ internal fun RootFlowMain(
                     .background(brush = bottomScrimBrush()),
         )
 
-        // ③ 玻璃层：离屏捕获 + AGSL 折射（仅 Tier 1/2）。
-        //    ★ 与 FloatingNavBar 的**同一套几何**（同一组常量、同一套 inset 与 padding）——
-        //      两者必须逐像素叠放，否则玻璃与胶囊会错位。
-        if (glassTier != GlassTier.HAZE) {
-            GlassLayer(
-                tier = glassTier,
-                renderer = renderer,
-                contentOffsetPx = barTopInRootPx,
-                contentLayerOriginPx = contentLayerOriginPx,
-                // 玻璃层里的副本始终用**目标 Tab**（`currentTab`）：它是"静止帧上应该
-                // 出现在胶囊背后的内容"。过渡期的不同步是已知代价，见 `MainTabTransition`。
-                contentSlot = { contentSlot(currentTab) },
-                modifier =
-                    Modifier
-                        .fillMaxWidth()
-                        .align(Alignment.BottomCenter)
-                        .windowInsetsPadding(WindowInsets.navigationBars)
-                        .padding(horizontal = NavBarHorizontalPadding, vertical = NavBarVerticalPadding)
-                        .height(NavBarHeight),
-            )
-        }
+        // ③ 玻璃层 —— **阶段 11e 起整个移除**（用户指令）。
+        //   它原本在胶囊位置再画一遍页面内容并套 AGSL 折射（离屏捕获 + `RenderEffect` 链）。
+        //   移除后底栏只剩毛玻璃；`GlassLayer` / `LiquidGlassRenderer` 的实现与单测保留为
+        //   「已评估、不参与生产」的记录，**不要**在没有真机验证的前提下挂回来。
 
-        // ④ 悬浮胶囊底栏（Tab 行 + 底面 + 描边 + 阶段 11 的指示器）
+        // ④ 悬浮胶囊底栏（Tab 行 + 底面 + 描边 + 液态指示器）
         FloatingNavBar(
             currentTab = currentTab,
             onSelect = onSelectTab,
             hazeState = hazeState,
             blurSupported = blurSupported,
-            glassTier = glassTier,
-            onCapsuleTopMeasured = { top -> barTopInRootPx = top },
             // ★ 阶段 11：角标**本阶段没有数据源**（`STAGE11-PLAN.md §3.2` 的空能力登记）。
             //   显式传空表而不是省略参数 —— 省略会让"这里其实什么都没接"被默认值掩盖，
             //   而 `always_run` chip 的教训（README「未验证」第 4 条）正是这么来的。
@@ -317,52 +258,10 @@ private fun bottomScrimBrush(): Brush =
 /** 渐隐终点的 alpha（见 [bottomScrimBrush] 的说明）。 */
 private const val SCRIM_END_ALPHA = 0.85f
 
-/**
- * effect 工厂：**只有 API 31+ 才存在 `RenderEffect`**。
- *
- * 26–30 上没有可用的实现 ⇒ 给一个恒返回 `null` 的空实现。
- * 之所以不在这里用 `Build.VERSION.SDK_INT >= 31` 去 `if/else` 一个真工厂：
- * 那样会在 26–30 上**仍然构造**一个 `AndroidGlassEffectFactory`（并因此加载
- * `RuntimeShader` 相关的类引用），而这个空实现让"低版本没有这条路"在类型层面就成立。
- *
- * 注：[GlassTier.HAZE] 档根本不会走到这里（调用方在 `glassTier != HAZE` 时才建玻璃层）。
- */
-private fun glassEffectFactory(): GlassEffectFactory =
-    if (Build.VERSION.SDK_INT >= MIN_RENDER_EFFECT_API) AndroidGlassEffectFactory() else NoGlassEffect
-
-/**
- * 26–30 上的空工厂（那时没有 `RenderEffect`，玻璃层根本不会被创建）。
- *
- * 单例而不是每次 `object : …` 匿名实现：匿名实现无法在单测里断言，
- * 而"低版本必须走空实现"这条判定值得有一个可命名的对象。
- */
-private object NoGlassEffect : GlassEffectFactory {
-    override fun create(
-        tier: GlassTier,
-        size: IntSize,
-        params: GlassParams,
-    ): RenderEffect? = null
-}
-
-/** `RenderEffect` 的最低 API（与 `BlurPolicy.MIN_BLUR_API_LEVEL` 同源）。 */
-private const val MIN_RENDER_EFFECT_API: Int = 31
-
-/**
- * 「图形能力是否可用」这个形参在本项目的取值（**阶段 7 的诚实登记**）。
- *
- * ## 为什么写死 `true` 而不是真去查询
- * `STAGE7-PLAN.md §3` 明确：**没有查到"AGSL 需要哪个 GL ES 等级"的权威口径**，
- * 因此不把成因写进判定函数。真机上实际发生的是：
- * 1. `GlassPolicy.decide` 先用「API 33+」这道**确定**的硬门（`RuntimeShader` 是 API 33
- *    起的框架类，已解包 `android.jar` 核实类与方法名存在）；
- * 2. 真正兜底的是 `AndroidGlassEffectFactory` 里的 `runCatching { RuntimeShader(agsl) }`
- *    —— 构造失败 ⇒ 降级到纯 blur（不崩、不黑屏）。
- *
- * 也就是说：这个 `true` **不会**造成"误判成可用然后崩"。
- * 将来若补齐权威查询口径，只需把这里（与 `SettingsScreen` 的同名常量）换成真实查询结果，
- * **判定函数与降级路径都不用改**。
- */
-private const val GRAPHICS_CAPABILITY_ASSUMED_OK: Boolean = true
+// ★ 阶段 11e 移除：`glassEffectFactory()` / `NoGlassEffect` / `MIN_RENDER_EFFECT_API` /
+//   `GRAPHICS_CAPABILITY_ASSUMED_OK` 四个都是**为液态玻璃层服务的**（effect 工厂 + 能力假定），
+//   随玻璃层一并移除。它们的实现与理由保留在 `LiquidGlassRenderer.kt` / `GlassTier.kt` 的
+//   文件头与 `STAGE7-PLAN.md` 里 —— 那两个文件本身也保留为「已评估、不参与生产」的记录。
 
 /**
  * 设备是否为低内存（需求 §6「低端机默认关闭」模糊）。

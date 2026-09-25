@@ -60,16 +60,9 @@ interface SettingsRepository {
      */
     suspend fun setLogRetentionDays(days: Int)
 
-    /**
-     * 写「液态玻璃（实验）」开关（阶段 7）。
-     *
-     * ## 契约：**不做三态**
-     * 与 [setBlurEnabled] 不同，这里没有"跟随设备判定"这一档 ——
-     * 设备能力（API 33 / 图形能力）由 `GlassPolicy.decide` 在**渲染时**单独判定，
-     * 与本开关是两条独立的门。折叠成三态会让"用户关掉了"与"设备不支持"
-     * 在设置里无法区分，而这两件事的文案完全不同。
-     */
-    suspend fun setLiquidGlassEnabled(enabled: Boolean)
+    // ★ 阶段 11e：`setLiquidGlassEnabled` **已移除**（用户指令）。
+    //   液态玻璃不再是底栏的材质，写入路径自然也不该存在。
+    //   原先的契约说明（"不做三态：设备能力由 GlassPolicy 在渲染时判定"）随特性一起失效。
 
     /**
      * 订阅当前设置（[settings] 的便捷别名，供 ViewModel 直接使用）。

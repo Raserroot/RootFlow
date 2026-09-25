@@ -156,14 +156,10 @@ class SettingsViewModel
          */
         fun setBlurEnabled(enabled: Boolean?) = writeSetting("毛玻璃") { settingsRepository.setBlurEnabled(enabled) }
 
-        /**
-         * 写「液态玻璃（实验）」开关（阶段 7）。
-         *
-         * 关掉 ⇒ 底栏立刻回到 Haze 材质（`GlassPolicy.decide` 的硬门 1）。
-         * **它是实验性效果的唯一退路**，因此必须能被用户关掉（已批准决策 P5）。
-         */
-        fun setLiquidGlassEnabled(enabled: Boolean) =
-            writeSetting("液态玻璃") { settingsRepository.setLiquidGlassEnabled(enabled) }
+        // ★ 阶段 11e：`setLiquidGlassEnabled` **已移除**（用户指令）。
+        //   液态玻璃不再是底栏的材质，也就没有"退路开关"要提供（对应地，已批准决策 P5
+        //   在该特性被移除后自然失效）。`SettingsRepository.setLiquidGlassEnabled` 与
+        //   `RootFlowSettings.liquidGlassEnabled` 也一并移除。
 
         // ── 安全熔断 ─────────────────────────────────────────────────────────
 

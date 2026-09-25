@@ -112,26 +112,6 @@ class SettingsRepositoryTest {
     }
 
     @Test
-    @DisplayName("★ 液态玻璃开关：默认开（用户自用，要看效果），关掉后能如实读回")
-    fun `liquid glass setting defaults to enabled and round trips`(
-        @TempDir directory: File,
-    ) = runTest {
-        val repository = repositoryIn(directory)
-
-        assertEquals(
-            true,
-            repository.current().liquidGlassEnabled,
-            "默认必须是开：否则 33+ 上做了效果却没人看得见（已批准决策 P5）",
-        )
-
-        repository.setLiquidGlassEnabled(false)
-        assertEquals(false, repository.current().liquidGlassEnabled, "关掉必须能与默认区分")
-
-        repository.setLiquidGlassEnabled(true)
-        assertEquals(true, repository.current().liquidGlassEnabled)
-    }
-
-    @Test
     @DisplayName("每次写入都推给订阅者（主题靠它实时生效）")
     fun `writes are pushed to subscribers`(
         @TempDir directory: File,

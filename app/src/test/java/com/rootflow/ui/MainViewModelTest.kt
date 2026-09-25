@@ -155,11 +155,6 @@ class MainViewModelTest {
             state.value = state.value.copy(logRetentionDays = days)
         }
 
-        /** 阶段 7 新增的接口方法：主界面用例不涉及液态玻璃开关，如实写入即可。 */
-        override suspend fun setLiquidGlassEnabled(enabled: Boolean) {
-            state.value = state.value.copy(liquidGlassEnabled = enabled)
-        }
-
         fun emit(settings: RootFlowSettings) {
             state.value = settings
         }

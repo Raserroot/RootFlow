@@ -48,21 +48,20 @@ import androidx.compose.ui.graphics.graphicsLayer
 import androidx.compose.ui.input.pointer.pointerInput
 import androidx.compose.ui.input.pointer.util.VelocityTracker
 import androidx.compose.ui.layout.onGloballyPositioned
-import androidx.compose.ui.layout.positionInRoot
 import androidx.compose.ui.platform.LocalDensity
+import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.unit.Dp
 import androidx.compose.ui.unit.dp
-import com.rootflow.domain.glass.GlassTier
 import com.rootflow.ui.TabDestination
 import com.rootflow.ui.TabDestinations
 import com.rootflow.ui.icon
-import com.rootflow.ui.theme.GLASS_SCRIM_ALPHA
 import com.rootflow.ui.theme.NAV_BAR_FALLBACK_ALPHA
 import com.rootflow.ui.theme.NAV_BAR_NOISE_FACTOR
 import com.rootflow.ui.theme.NavBarBlurRadius
 import com.rootflow.ui.theme.NavBarCornerRadius
 import com.rootflow.ui.theme.NavBarHeight
 import com.rootflow.ui.theme.NavBarHorizontalPadding
+import com.rootflow.ui.theme.NavBarLabelFontSize
 import com.rootflow.ui.theme.NavBarLight
 import com.rootflow.ui.theme.NavBarVerticalPadding
 import dev.chrisbanes.haze.HazeState
@@ -166,15 +165,11 @@ internal fun FloatingNavBar(
     onSelect: (TabDestination) -> Unit,
     hazeState: HazeState,
     blurSupported: Boolean,
-    glassTier: GlassTier,
-    onCapsuleTopMeasured: (Int) -> Unit,
     modifier: Modifier = Modifier,
     badges: Map<TabDestination, Int> = emptyMap(),
 ) {
     val colorScheme = MaterialTheme.colorScheme
     val dark = colorScheme.background.luminanceIsDark()
-    // Tier 1/2 = 玻璃层在跑（它自带模糊）⇒ 本组件不再调 Haze
-    val localGlassActive = glassTier != GlassTier.HAZE
 
     val tabs = TabDestinations.ALL
     val selectedIndex = tabs.indexOf(currentTab).coerceAtLeast(0)
@@ -267,7 +262,6 @@ internal fun FloatingNavBar(
                     //   "胶囊背后那一条像素"。positionInRoot 与玻璃层的坐标系同源
                     //   （两者都是根 Box 的直接子节点）。
                     .onGloballyPositioned { coordinates ->
-                        onCapsuleTopMeasured(coordinates.positionInRoot().y.toInt())
                         val width = coordinates.size.width.toFloat()
                         // 宽度变化（旋转 / 折叠屏）⇒ 让下一次 LaunchedEffect 重新就位，
                         // 否则指示器会停在按旧宽度算出来的位置
@@ -284,39 +278,27 @@ internal fun FloatingNavBar(
                         shape = RoundedCornerShape(NavBarCornerRadius),
                         clip = false,
                     ).clip(RoundedCornerShape(NavBarCornerRadius))
-                    // ② 底面遮罩：
-                    //    · Tier 3（Haze）：仅在不支持模糊时铺纯色（需求 §6 的 0.92f）
-                    //    · Tier 1/2：**始终**铺一层薄遮罩（见 GLASS_SCRIM_ALPHA 的 KDoc）
+                    // ② 底面遮罩：**仅在"模糊不可用"时**铺纯色（需求 §6 的 0.92f）。
+                    //    阶段 11e 起底栏只有毛玻璃一种材质，不再有"玻璃层自己在后面画"的情况。
                     .then(
-                        when {
-                            localGlassActive -> {
-                                Modifier.background(colorScheme.surface.copy(alpha = GLASS_SCRIM_ALPHA))
-                            }
-
-                            blurSupported -> {
-                                Modifier
-                            }
-
-                            else -> {
-                                Modifier.background(colorScheme.surface.copy(alpha = NAV_BAR_FALLBACK_ALPHA))
-                            }
-                        },
-                    )
-                    // ③ 毛玻璃：**只有 Tier 3 走 Haze**
-                    .then(
-                        if (localGlassActive) {
+                        if (blurSupported) {
                             Modifier
                         } else {
-                            Modifier.hazeEffect(state = hazeState, style = HazeMaterials.thin()) {
-                                // ★ 四处显式赋值（F3）：**不依赖任何隐式解析链**。
-                                backgroundColor = colorScheme.surface
-                                blurRadius = NavBarBlurRadius
-                                noiseFactor = NAV_BAR_NOISE_FACTOR
-                                blurEnabled = blurSupported
-                                fallbackTint = HazeTint(colorScheme.surface.copy(alpha = NAV_BAR_FALLBACK_ALPHA))
-                            }
+                            Modifier.background(colorScheme.surface.copy(alpha = NAV_BAR_FALLBACK_ALPHA))
                         },
                     )
+                    // ③ 毛玻璃（Haze）—— **阶段 11e 起这是底栏唯一的材质**。
+                    //    液态玻璃（AGSL 折射 + 离屏捕获 + 三档降级）已按用户指令整个移除；
+                    //    `GlassLayer` / `LiquidGlassRenderer` / `GlassParams` / `GlassTier` 保留为
+                    //    「已评估、不参与生产」的记录，理由见各自文件头。
+                    .hazeEffect(state = hazeState, style = HazeMaterials.thin()) {
+                        // ★ 四处显式赋值（F3）：**不依赖任何隐式解析链**。
+                        backgroundColor = colorScheme.surface
+                        blurRadius = NavBarBlurRadius
+                        noiseFactor = NAV_BAR_NOISE_FACTOR
+                        blurEnabled = blurSupported
+                        fallbackTint = HazeTint(colorScheme.surface.copy(alpha = NAV_BAR_FALLBACK_ALPHA))
+                    }
                     // ④ 液态玻璃微光边框（三档都用：它是"玻璃还在"的锚点）
                     .liquidGlassBorder(cornerRadius = NavBarCornerRadius, dark = dark)
                     // ⑤ 拖拽切换（**手势挂在胶囊上**，不在单个 Tab 上）。
@@ -497,7 +479,11 @@ private fun NavBarItem(
         }
         Text(
             text = tab.title,
-            style = MaterialTheme.typography.labelSmall,
+            // ★ 阶段 11e：字号从 `labelSmall`（13sp）独立出来并调小到 [NavBarLabelFontSize]（11sp）。
+            //   用显式参数而不是 `style.copy(...)`：`labelSmall` 带着 lineHeight/letterSpacing，
+            //   照抄进来会把这两个也一起继承，而底栏只需要"字小一点"。
+            fontSize = NavBarLabelFontSize,
+            fontWeight = FontWeight.Medium,
             color = contentColor,
             modifier = Modifier.padding(top = 2.dp),
         )

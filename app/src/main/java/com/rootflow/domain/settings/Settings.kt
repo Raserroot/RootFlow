@@ -51,16 +51,15 @@ enum class ThemeMode {
  * @property dynamicColor 是否使用 MD3 动态取色（API 31+ 生效）
  * @property logRetentionDays 运行历史 / 日志的保留天数；**必须经 [LogRetention.sanitize] 收敛**
  *   （档位 3/7/14/30，见 [LogRetention] 的需求口径澄清）
- * @property liquidGlassEnabled 液态玻璃（实验）开关（阶段 7）；关掉 ⇒ 底栏回到 Haze 材质。
- *   **默认 `true`**：33+ 上直接能看到新效果，否则"做了却没人看得见"；
- *   它是**实验性**效果的唯一退路，因此必须可由用户关闭。
- *   判定见 `com.rootflow.domain.glass.GlassPolicy.decide`（本字段只是"用户的意愿"，
- *   能不能真的用还要过 API 33 与图形能力两道门）
  */
 data class RootFlowSettings(
     val themeMode: ThemeMode = ThemeMode.SYSTEM,
     val blurEnabled: Boolean? = null,
     val dynamicColor: Boolean = true,
     val logRetentionDays: Int = LogRetention.DEFAULT_DAYS,
-    val liquidGlassEnabled: Boolean = true,
+    // ★ 阶段 11e：`liquidGlassEnabled` **已移除**（用户指令）。
+    //   底栏只剩毛玻璃一种材质，该字段的消费者（`GlassPolicy.decide` 的硬门 1、
+    //   设置页开关、`RootFlowMain` 的档位计算）全部一并移除。
+    //   它的历史语义与"为什么当初必须能被关掉"（已批准决策 P5）保留在
+    //   `GlassTier.kt` / `LiquidGlassRenderer.kt` 的文件头里。
 )

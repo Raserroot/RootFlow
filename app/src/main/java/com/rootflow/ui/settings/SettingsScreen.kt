@@ -49,7 +49,6 @@ import com.rootflow.domain.event.EventSourceStatus
 import com.rootflow.domain.event.RestoreMode
 import com.rootflow.domain.event.SettingsTargets
 import com.rootflow.domain.event.TripReason
-import com.rootflow.domain.glass.GlassPolicy
 import com.rootflow.domain.residue.ResidueScan
 import com.rootflow.domain.service.ForegroundState
 import com.rootflow.domain.settings.BlurPolicy
@@ -171,7 +170,6 @@ internal fun SettingsScreen(
                 onThemeMode = viewModel::setThemeMode,
                 onDynamicColor = viewModel::setDynamicColor,
                 onBlurEnabled = viewModel::setBlurEnabled,
-                onLiquidGlassEnabled = viewModel::setLiquidGlassEnabled,
             )
 
             RootResidencySection(
@@ -274,7 +272,6 @@ private fun AppearanceSection(
     onThemeMode: (ThemeMode) -> Unit,
     onDynamicColor: (Boolean) -> Unit,
     onBlurEnabled: (Boolean?) -> Unit,
-    onLiquidGlassEnabled: (Boolean) -> Unit,
 ) {
     val blurEffective =
         BlurPolicy.effectiveBlur(
@@ -282,17 +279,8 @@ private fun AppearanceSection(
             isLowRamDevice = isLowRamDevice,
             apiLevel = sdkInt,
         )
-    // 液态玻璃的档位：**同一套判定**由底栏（RootFlowMain）与这里共用，
-    // 因此设置页说的"已启用折射/已降级"与底栏真正做的永远是同一件事
-    // （`GlassPolicy` 的 KDoc 与 `GlassTierTest` 是本判定的唯一真相源）。
-    val glassTier =
-        GlassPolicy.decide(
-            apiLevel = sdkInt,
-            graphicsCapabilityOk = GRAPHICS_CAPABILITY_ASSUMED_OK,
-            liquidGlassEnabled = settings.liquidGlassEnabled,
-            lowRam = isLowRamDevice,
-            blurSupported = blurEffective,
-        )
+    // ★ 阶段 11e：`glassTier` 的本地判定**已移除**（液态玻璃不再存在，也就没有"档位"要显示）。
+    //   注意 `blurEffective` 仍然保留 —— 它是**毛玻璃**的判定，与液态玻璃无关。
 
     SectionCard(title = "外观") {
         Text(
@@ -349,23 +337,10 @@ private fun AppearanceSection(
             }
         }
 
-        HorizontalDivider()
-
-        SettingSwitchRow(
-            label = "液态玻璃（实验）",
-            // 永远可点：判定是"设备能力 + 用户意愿"的合成，**不能**因为设备不支持就把开关灰掉
-            // ——那样用户会以为是自己配错了（与 6e 的 D14「权限不灰显」同一条纪律）。
-            enabled = true,
-            checked = settings.liquidGlassEnabled,
-            supporting =
-                SettingsProjections.glassStatusText(
-                    enabled = settings.liquidGlassEnabled,
-                    tier = glassTier,
-                    apiLevel = sdkInt,
-                    lowRam = isLowRamDevice,
-                ),
-            onCheckedChange = onLiquidGlassEnabled,
-        )
+        // ★ 阶段 11e：「液态玻璃（实验）」开关**整个移除**（用户指令）。
+        //   底栏此后只有毛玻璃一种材质，留着这个开关只会让人以为"打开它能看到什么"。
+        //   它的判定链（`GlassPolicy.decide`）与状态文案（`SettingsProjections.glassStatusText`）
+        //   一并从本页摘除；后者的实现保留在 `SettingsModels.kt` 里作为留档。
     }
 }
 
@@ -834,20 +809,10 @@ private fun ResidueConfirmDialog(
 /** 动态取色的最低 API（`Build.VERSION_CODES.S`，此处写字面量以免引入版本常量分支）。 */
 private const val DYNAMIC_COLOR_MIN_SDK: Int = 31
 
-/**
- * 「图形能力是否可用」这个形参在本项目的取值（**阶段 7 的诚实登记**）。
- *
- * ## 为什么写死 `true` 而不是真去查询
- * `STAGE7-PLAN.md §3` 明确：**没有查到"AGSL 需要哪个 GL ES 等级"的权威口径**，
- * 因此不把成因写进判定函数。在真机上实际发生的是：
- * 1. `GlassPolicy.decide` 先用「API 33+」这道**确定**的硬门（`RuntimeShader` 是 API 33 起的框架类，已解包核实）；
- * 2. 真正兜底的是 `AndroidGlassEffectFactory` 里的 `runCatching { RuntimeShader(agsl) }`
- *    —— 构造失败 ⇒ 降级到纯 blur（不崩、不黑屏）。
- *
- * 也就是说：这个 `true` **不会**造成"误判成可用然后崩"。将来若补齐权威查询口径，
- * 只需把这里与 `RootFlowMain` 的同名常量换成真实查询结果，**判定函数与降级路径都不用改**。
- */
-private const val GRAPHICS_CAPABILITY_ASSUMED_OK: Boolean = true
+// ★ 阶段 11e：`GRAPHICS_CAPABILITY_ASSUMED_OK` 随「液态玻璃（实验）」开关一并摘除（用户指令）。
+//   那个写死的 `true` 只喂给 `GlassPolicy.decide(graphicsCapabilityOk = ...)`，而该调用点
+//   已从本页移除；底栏此后只有毛玻璃一种材质，本页不再有需要「假设图形能力」的判定。
+//   那段「能力无法权威查询、只能靠构造失败兜底」的诚实登记保留在 `GlassTier.kt` 文件头。
 
 /**
  * 设备是否为低内存（需求 §6「低端机默认关闭」模糊）。

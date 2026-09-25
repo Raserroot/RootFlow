@@ -53,9 +53,6 @@ internal class FakeSettingsRepository(
     /** 保留天数写入序列（阶段 6d）。 */
     val retentionWrites = mutableListOf<Int>()
 
-    /** 液态玻璃开关写入序列（阶段 7）。 */
-    val liquidGlassWrites = mutableListOf<Boolean>()
-
     override suspend fun current(): RootFlowSettings = state.value
 
     override suspend fun setThemeMode(mode: ThemeMode) {
@@ -82,11 +79,7 @@ internal class FakeSettingsRepository(
         state.value = state.value.copy(logRetentionDays = LogRetention.sanitize(days))
     }
 
-    override suspend fun setLiquidGlassEnabled(enabled: Boolean) {
-        maybeFail()
-        liquidGlassWrites += enabled
-        state.value = state.value.copy(liquidGlassEnabled = enabled)
-    }
+    // ★ 阶段 11e：`setLiquidGlassEnabled` 的替身已随特性移除。
 
     private fun maybeFail() {
         if (failWrites) error("datastore write failed (fake)")

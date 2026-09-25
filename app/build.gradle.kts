@@ -54,17 +54,19 @@ android {
         applicationId = "com.rootflow.app"
         minSdk = 26
         targetSdk = 34
-        // ★ 阶段 11d（此前是 1.3.2 / code 7）。用户三条实测反馈的落地：
-        //   ① 「选中蓝、未选中灰」—— 新增 NavBarPalette（覆盖 MD3 主题色，用户点名的局部例外）
-        //   ② 「液态玻璃还是没用」—— 根因是 NavBarBlurRadius 24dp + GLASS_SCRIM_ALPHA 0.22
-        //      把背后的内容糊成一片均匀灰。参照 OPCameraPro 的实测取向（blur 0.8 / tint 0.012）
-        //      降到 8dp / 0.10，玻璃这才透出背后的形状
-        //   ③ 死白已在 1.3.2 摘除跟手光晕时根治
+        // ★ 阶段 11e（此前 1.4.0 / code 8）。用户第四、五条反馈的落地：
+        //   ① 「液态玻璃还是没用」→ 用户直接裁定**移除液态玻璃**，底栏只留毛玻璃（Haze）。
+        //      整条链路（AGSL 折射 / 离屏捕获 / 三档降级 / 设置页开关 / 跟手光晕）撤出生产；
+        //      实现与理由留在 GlassLayer / LiquidGlassRenderer / GlassParams / GlassTier /
+        //      NavBarGlow 的文件头（「已评估、不参与生产」）。
+        //   ② 「底栏字体调小一点」→ 新增 NavBarLabelFontSize = 11.sp
+        //      （labelSmall 13sp 是全局共用的，未动）。
+        //   ③ 1.4.0 的 NavBarPalette（选中蓝/未选中灰）与玻璃参数（blur 8dp / scrim 0.10）**保持不变**。
         //   versionName 会经 BuildConfig 显示在主页「App 版本」与设置页「关于」，
         //   因此改这里就等于改了真机上看到的版本号 —— 发布时**必须**与 tag 一致。
         //   ⚠️ 本版本**未经真机验证**（`STAGE11-PLAN.md §5`）⇒ tag 只能带 `-unverified`。
-        versionCode = 8
-        versionName = "1.4.0"
+        versionCode = 9
+        versionName = "1.4.1"
 
         testInstrumentationRunner = "androidx.test.runner.AndroidJUnitRunner"
     }

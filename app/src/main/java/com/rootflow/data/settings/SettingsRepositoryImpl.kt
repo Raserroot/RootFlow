@@ -110,9 +110,10 @@ class SettingsRepositoryImpl
             edit { preferences -> preferences[SettingsKeys.LOG_RETENTION_DAYS] = LogRetention.sanitize(days) }
         }
 
-        override suspend fun setLiquidGlassEnabled(enabled: Boolean) {
-            edit { preferences -> preferences[SettingsKeys.LIQUID_GLASS_ENABLED] = enabled }
-        }
+        // ★ 阶段 11e：`setLiquidGlassEnabled` 与 `SettingsKeys.LIQUID_GLASS_ENABLED` 的读取
+        //   均已移除（用户指令）。磁盘上可能仍留有旧键 —— **不做迁移、也不清理**：
+        //   DataStore 里的孤儿键无副作用，而"为删一个键写一次迁移"的代价不值得
+        //   （与 `PROJECT_STATE.md` 里"崩了就崩了、不留半成品迁移"的纪律一致）。
 
         // ------------------------------------------------------------------ 内部
 
@@ -159,8 +160,9 @@ internal object SettingsKeys {
     /** 运行历史保留天数（阶段 6d；档位与收敛规则见 `LogRetention`）。 */
     val LOG_RETENTION_DAYS: Preferences.Key<Int> = intPreferencesKey("log_retention_days")
 
-    /** 「液态玻璃（实验）」（阶段 7）。 */
-    val LIQUID_GLASS_ENABLED: Preferences.Key<Boolean> = booleanPreferencesKey("liquid_glass_enabled")
+    // ★ 阶段 11e：`LIQUID_GLASS_ENABLED` 键**已移除**（用户指令）。
+    //   磁盘上若留有旧键，**不迁移、不清理** —— DataStore 里的孤儿键无副作用，
+    //   而"为删一个键写一次迁移"的代价不值得。
 }
 
 /**
@@ -176,6 +178,4 @@ internal fun Preferences.toSettings(): RootFlowSettings =
         dynamicColor = this[SettingsKeys.DYNAMIC_COLOR] ?: true,
         // 读路径也收敛：键被外部改坏 / 旧版本写过已下线档位时，这里兜住（见 LogRetention.sanitize）
         logRetentionDays = LogRetention.sanitize(this[SettingsKeys.LOG_RETENTION_DAYS]),
-        // 键缺失 ⇒ true（默认开：33+ 上直接看到新效果；关掉是用户的显式选择）
-        liquidGlassEnabled = this[SettingsKeys.LIQUID_GLASS_ENABLED] ?: true,
     )
