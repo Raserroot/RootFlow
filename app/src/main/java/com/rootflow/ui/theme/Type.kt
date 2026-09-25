@@ -129,6 +129,18 @@ internal val RootFlowTypography =
 internal val NavBarLabelFontSize = 11.sp
 
 /**
+ * 底栏 Tab 文字的行高（阶段 11e：**14sp**）。
+ *
+ * ## 为什么必须显式给
+ * `Text` 只覆盖 `fontSize` 时，行高仍从 `LocalTextStyle` 继承 —— 底栏这里是 `labelSmall`
+ * 的 **18sp**。于是 11sp 的字被塞进 18sp 的行框，`Column` 的内容总高白白多出 4dp，
+ * 标签又被推向胶囊下沿（与 [NavBarLabelFontSize] 一起构成用户的「字要往上调」）。
+ *
+ * 14sp ≈ 11sp × 1.27，是"装得下字形又不留空转"的比例。
+ */
+internal val NavBarLabelLineHeight = 14.sp
+
+/**
  * 深色终端每一行的字号（阶段 8.1：12sp → **13sp**）。
  *
  * ## 为什么单独一个常量、不直接 `bodySmall`

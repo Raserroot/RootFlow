@@ -62,6 +62,7 @@ import com.rootflow.ui.theme.NavBarCornerRadius
 import com.rootflow.ui.theme.NavBarHeight
 import com.rootflow.ui.theme.NavBarHorizontalPadding
 import com.rootflow.ui.theme.NavBarLabelFontSize
+import com.rootflow.ui.theme.NavBarLabelLineHeight
 import com.rootflow.ui.theme.NavBarLight
 import com.rootflow.ui.theme.NavBarVerticalPadding
 import dev.chrisbanes.haze.HazeState
@@ -483,6 +484,9 @@ private fun NavBarItem(
             //   用显式参数而不是 `style.copy(...)`：`labelSmall` 带着 lineHeight/letterSpacing，
             //   照抄进来会把这两个也一起继承，而底栏只需要"字小一点"。
             fontSize = NavBarLabelFontSize,
+            // ★ 阶段 11e：行高也一并收窄。只覆盖 fontSize 的话，18sp 的继承行框会把内容
+            //   总高撑成 64dp（正好等于 NavBarHeight），标签又被推回胶囊下沿。
+            lineHeight = NavBarLabelLineHeight,
             fontWeight = FontWeight.Medium,
             color = contentColor,
             modifier = Modifier.padding(top = 2.dp),
@@ -519,16 +523,25 @@ private fun BoxScope.Badge(text: String) {
 }
 
 /**
- * 图标容器的固定尺寸（44dp）。
+ * 图标容器的固定尺寸（24dp）。
  *
- * 用固定容器而不是让图标自己撑开：图标与文字的相对位置因此**与图标无关**，
+ * ## 为什么用固定容器
+ * 不让图标自己撑开：图标与文字的相对位置因此**与图标无关**，
  * 换一套图标不会让文字上下跳。
  *
- * 它与指示器的高度（`NavBarHeight − 2 × INSET_DP` = 64 − 20 = 44dp）**数值相同但是巧合** ——
- * 前者是"图标占位"，后者是"水滴的高度"。改其中一个不该被另一个牵动，
- * 因此这里是两个独立的概念，只在视觉上恰好一致。
+ * ## 为什么是 24（阶段 11e 从 44 改小）
+ * 24 = 22dp 图标 + 上下各 1dp 余量，是"刚好裹住图标"的尺寸。
+ *
+ * 上一版取 44dp，于是 `Column` 的内容总高恰好是 44（容器）+ 2（间距）+ 18（`labelSmall`
+ * 的行高）= 64dp = `NavBarHeight` —— **一格不剩**，`Arrangement.Center` 没有余量可分配，
+ * 标签被顶到胶囊最下沿。用户 2026-09-25 反馈的「字要往上调，符号下面一点就行」就是这个。
+ *
+ * ## 与指示器高度无关
+ * 44dp 此前恰好等于指示器高度（`NavBarHeight − 2 × INSET_DP`，按当时的 `INSET_DP = 10`
+ * 算是 44）—— 那**从来只是巧合**，改这里不该牵动指示器几何。`INSET_DP` 在阶段 11b
+ * 已按参考实现改为 3（指示器高度 58dp），这个 44 更是彻底无关了。
  */
-private val ICON_FRAME_SIZE = 44.dp
+private val ICON_FRAME_SIZE = 24.dp
 
 /**
  * 底栏的**选中 / 未选中配色**（阶段 11d）。

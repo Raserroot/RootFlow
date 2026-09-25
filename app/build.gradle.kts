@@ -54,19 +54,24 @@ android {
         applicationId = "com.rootflow.app"
         minSdk = 26
         targetSdk = 34
-        // ★ 阶段 11e（此前 1.4.0 / code 8）。用户第四、五条反馈的落地：
+        // ★ 阶段 11e（此前 1.4.0 / code 8）。用户第六、七、八条反馈的落地：
         //   ① 「液态玻璃还是没用」→ 用户直接裁定**移除液态玻璃**，底栏只留毛玻璃（Haze）。
         //      整条链路（AGSL 折射 / 离屏捕获 / 三档降级 / 设置页开关 / 跟手光晕）撤出生产；
         //      实现与理由留在 GlassLayer / LiquidGlassRenderer / GlassParams / GlassTier /
         //      NavBarGlow 的文件头（「已评估、不参与生产」）。
         //   ② 「底栏字体调小一点」→ 新增 NavBarLabelFontSize = 11.sp
         //      （labelSmall 13sp 是全局共用的，未动）。
-        //   ③ 1.4.0 的 NavBarPalette（选中蓝/未选中灰）与玻璃参数（blur 8dp / scrim 0.10）**保持不变**。
+        //   ③ 「字要往上调，符号下面一点就行」→ 1.4.1 只改了字号，行高仍继承 labelSmall 的 18sp，
+        //      于是内容总高 44 + 2 + 18 = 64dp **正好填满**胶囊，Arrangement.Center 没有余量可分配，
+        //      标签被顶到最下沿。本版把 ICON_FRAME_SIZE 由 44 → 24dp 并新增
+        //      NavBarLabelLineHeight = 14.sp：内容总高降到 40dp，标签上移约 10dp，
+        //      图标与标签之间留 ~2dp、胶囊底部留 ~14dp。
+        //   ④ 1.4.0 的 NavBarPalette（选中蓝/未选中灰）与玻璃参数（blur 8dp / scrim 0.10）**保持不变**。
         //   versionName 会经 BuildConfig 显示在主页「App 版本」与设置页「关于」，
         //   因此改这里就等于改了真机上看到的版本号 —— 发布时**必须**与 tag 一致。
         //   ⚠️ 本版本**未经真机验证**（`STAGE11-PLAN.md §5`）⇒ tag 只能带 `-unverified`。
-        versionCode = 9
-        versionName = "1.4.1"
+        versionCode = 10
+        versionName = "1.4.2"
 
         testInstrumentationRunner = "androidx.test.runner.AndroidJUnitRunner"
     }
