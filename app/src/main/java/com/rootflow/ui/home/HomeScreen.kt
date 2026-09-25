@@ -31,9 +31,13 @@ import com.rootflow.ui.theme.NavBarReservedSpace
  * 安全模式 banner（条件显示）
  * RootFlow                        ← 大字号标题（替代 AppBar）
  * ┌──────────────────────────┐
- * │ 服务运行中          ╭───╮ │   ← 底色随状态：primaryContainer / errorContainer / surfaceVariant
- * │ 0.6.0-ui            │ ✓ │ │
- * │ API 35 · unknown    ╰───╯ │
+ * │ 服务运行中                │   ← 11e 补丁2：照 LSPosed 复刻的两行版式，
+ * │ 1.4.2 · API 35 · unknown  │      右侧大图标溢出卡片右缘被裁（见 `ServiceStatusCard`）
+ * └──────────────────────────┘
+ * ┌──────────────────────────┐
+ * │ 总开关                    │   ← P4 的总闸：改库的**唯一**写入点
+ * │ 已关闭              ╭───╮ │
+ * │ 已启用 0 个脚本 · 常驻 0 个 │ ◯ │ │
  * └──────────────────────────┘
  * ┌──────────────────────────┐
  * │ Android 版本              │   ← label 大字 + value 灰色小字
@@ -50,6 +54,8 @@ import com.rootflow.ui.theme.NavBarReservedSpace
  *
  * 变化点（相对 6b）：① 新增顶部大标题；② 服务卡改为**底色随状态 + 右侧大图标 + 三行**；
  * ③ 原「环境信息卡 + 事件源卡」**合并为一张行式信息卡**；④ 终端位置不变（仍在最后）。
+ * ⑤ P4 新增总开关卡；**11e 补丁按用户指令把它从标题正下方移到服务卡之下** ——
+ *    上面那张图就是补丁后的顺序（服务卡在最顶）。
  *
  * ## 为什么标题不用 `TopAppBar`
  * 需求 §6 的参照物（LSPosed / Magisk）都是**无 AppBar** 的大标题版式：
@@ -113,16 +119,13 @@ internal fun HomeScreen(
             item(key = "title") {
                 PageTitle()
             }
-            // ★ P4：总开关紧跟标题（方案 §5.1 的"总开关的家"）。
-            //   放在服务卡**之前**：它是全局唯一的开关，用户进主页第一眼要看到"现在开不开"，
-            //   而不是先读一段服务状态。
-            item(key = "masterSwitch") {
-                MasterSwitchCard(
-                    state = state.masterSwitch,
-                    notice = masterSwitchNotice,
-                    onToggle = viewModel::setMasterSwitch,
-                )
-            }
+            // ★ 11e 补丁：服务卡在总开关卡**之前**（用户 2026-09-25 指令：
+            //   「把那个"服务运行中"的卡片跟"总开关"这个卡片调换一下位置，
+            //     让"服务运行中"这个卡片在最顶部」）。
+            //   P4 原本把总开关放在标题正下方（方案 §5.1 的"总开关的家"），理由是
+            //   "进主页第一眼要知道现在开不开"。用户看过真机后推翻了它 ——
+            //   先读**系统此刻在干什么**（服务卡是实时读数），再读**你设的意图**（总闸）。
+            //   **这是用户裁定，不是回退到 P4 之前的旧顺序**，后续会话不要擅自换回来。
             item(key = "service") {
                 ServiceStatusCard(
                     service = state.service,
@@ -135,6 +138,14 @@ internal fun HomeScreen(
                             apiLevel = HomeProjections.apiLevelOf(state.environment),
                             rootFlavor = HomeProjections.rowValue(state.environment, "Root"),
                         ),
+                )
+            }
+            // ★ P4：总开关卡（方案 §5.1 的"总开关的家"）。11e 补丁后位于服务卡之下。
+            item(key = "masterSwitch") {
+                MasterSwitchCard(
+                    state = state.masterSwitch,
+                    notice = masterSwitchNotice,
+                    onToggle = viewModel::setMasterSwitch,
                 )
             }
             item(key = "info") {
