@@ -387,7 +387,7 @@ internal fun FloatingNavBar(
                                     pressScaleY.value *
                                     NavBarIndicator.stretchScaleY(indicatorVelocity)
                             }.clip(CircleShape)
-                            .background(colorScheme.secondaryContainer.copy(alpha = SELECTED_BADGE_ALPHA))
+                            .background(NavBarPalette.indicator(dark))
                             .indicatorSurface(),
                 )
             }
@@ -401,6 +401,7 @@ internal fun FloatingNavBar(
                     NavBarItem(
                         tab = tab,
                         selected = tab == currentTab,
+                        dark = dark,
                         badgeCount = badges[tab],
                         onPulse = {
                             // 点击也走一次"按下 → 释放"：否则点 Tab 时指示器只是滑过去，
@@ -449,14 +450,16 @@ private const val PRESS_PULSE_MILLIS = 140L
 private fun NavBarItem(
     tab: TabDestination,
     selected: Boolean,
+    dark: Boolean,
     badgeCount: Int?,
     onPulse: () -> Unit,
     onClick: () -> Unit,
     modifier: Modifier = Modifier,
 ) {
     val colorScheme = MaterialTheme.colorScheme
+    // ★ 选中蓝 / 未选中灰（用户点名的配色，见 [NavBarPalette]）—— 不再跟随 MD3 主题色
     val contentColor by animateColorAsState(
-        targetValue = if (selected) colorScheme.onSecondaryContainer else colorScheme.onSurfaceVariant,
+        targetValue = if (selected) NavBarPalette.selected(dark) else NavBarPalette.unselected(dark),
         label = "navItemColor",
     )
     // 不显示水波纹：底栏是玻璃材质，涟漪会在渐变边框下显得脏
@@ -542,12 +545,43 @@ private fun BoxScope.Badge(text: String) {
 private val ICON_FRAME_SIZE = 44.dp
 
 /**
- * 指示器选中态的填充 alpha。
+ * 底栏的**选中 / 未选中配色**（阶段 11d）。
  *
- * 用**半透明**而不是实心 `secondaryContainer`：底栏本身是玻璃/毛玻璃，
- * 实心色块会在渐变描边下显得像"贴上去的贴纸"。
+ * ## 为什么不用 `MaterialTheme.colorScheme`
+ * 用户明确点名了配色：**选中蓝、未选中灰**（参照 `LSPosed 2.1.1` 的底栏做法与
+ * `OPCameraPro 3.2.10` 的选中色）。而 MD3 的 `colorScheme.primary` 在本项目的默认配色下
+ * 是**紫色**，与"蓝"不是一回事；`onSurfaceVariant` 也不是用户要的那个灰。
+ *
+ * ## 与「MD3 动态取色」（需求 §6）的关系
+ * 这组颜色**覆盖**动态取色 —— 这是一次**有意的局部例外**：底栏是唯一一处
+ * 用户直接点名了颜色的地方，其余界面仍完全跟随动态取色。
+ * 若将来要恢复，把这几个常量换成 `colorScheme.primary` / `onSurfaceVariant` 即可。
+ *
+ * ## 取值来源（对参照 App 的截图逐像素取样）
+ * | 用途 | 浅色 | 深色 | 来源 |
+ * |---|---|---|---|
+ * | 选中 | `#3B7DE4` | `#7FB0FF` | OPCameraPro 的选中图标/文字实测 `#3B7FE4`；深色档调亮以保住对比 |
+ * | 未选中 | `#7A7A7A` | `#9E9E9E` | OPCameraPro 的未选中**文字**实测 `#7A7A7A` |
+ * | 指示器填充 | 蓝 16% | 蓝 22% | 参照 App 的淡色药丸（它用中性灰，本版按用户要求改蓝） |
  */
-private const val SELECTED_BADGE_ALPHA = 0.55f
+private object NavBarPalette {
+    private val selectedLight = Color(0xFF3B7DE4)
+    private val selectedDark = Color(0xFF7FB0FF)
+    private val unselectedLight = Color(0xFF7A7A7A)
+    private val unselectedDark = Color(0xFF9E9E9E)
+
+    fun selected(dark: Boolean): Color = if (dark) selectedDark else selectedLight
+
+    fun unselected(dark: Boolean): Color = if (dark) unselectedDark else unselectedLight
+
+    /**
+     * 指示器的填充 = 选中色的低 alpha 版。
+     *
+     * 用**半透明**而不是实心色块：底栏本身是玻璃，实心色块会在渐变描边下显得像
+     * "贴上去的贴纸"（参照 App 的药丸也是淡色的）。
+     */
+    fun indicator(dark: Boolean): Color = selected(dark).copy(alpha = if (dark) 0.22f else 0.16f)
+}
 
 /** 角标相对图标框右上角的内缩（dp）。 */
 private val BADGE_INSET = 6.dp

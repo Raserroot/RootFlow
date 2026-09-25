@@ -54,16 +54,17 @@ android {
         applicationId = "com.rootflow.app"
         minSdk = 26
         targetSdk = 34
-        // ★ 阶段 11c（此前是 1.3.1 / code 6）。1.3.1 只修掉了「非 premultiplied 返回值」，
-        //   真机上**仍然死白** —— 真因是光晕 shader 里 `smoothstep(radius, radius*0.5, dist)`
-        //   的 **edge0 >= edge1 属于未定义行为**：模拟器（SwiftShader）恰好算对，
-        //   真机 GPU 返回恒定 1。本版**把整个跟手光晕摘除**（两个参照对象的底栏都没有这个效果），
-        //   底栏从此不含任何"依赖后端实现"的 AGSL —— 除了 STAGE7 那套玻璃（它的返回值 alpha=1，合法）。
+        // ★ 阶段 11d（此前是 1.3.2 / code 7）。用户三条实测反馈的落地：
+        //   ① 「选中蓝、未选中灰」—— 新增 NavBarPalette（覆盖 MD3 主题色，用户点名的局部例外）
+        //   ② 「液态玻璃还是没用」—— 根因是 NavBarBlurRadius 24dp + GLASS_SCRIM_ALPHA 0.22
+        //      把背后的内容糊成一片均匀灰。参照 OPCameraPro 的实测取向（blur 0.8 / tint 0.012）
+        //      降到 8dp / 0.10，玻璃这才透出背后的形状
+        //   ③ 死白已在 1.3.2 摘除跟手光晕时根治
         //   versionName 会经 BuildConfig 显示在主页「App 版本」与设置页「关于」，
         //   因此改这里就等于改了真机上看到的版本号 —— 发布时**必须**与 tag 一致。
         //   ⚠️ 本版本**未经真机验证**（`STAGE11-PLAN.md §5`）⇒ tag 只能带 `-unverified`。
-        versionCode = 7
-        versionName = "1.3.2"
+        versionCode = 8
+        versionName = "1.4.0"
 
         testInstrumentationRunner = "androidx.test.runner.AndroidJUnitRunner"
     }

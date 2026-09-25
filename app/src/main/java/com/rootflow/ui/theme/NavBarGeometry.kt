@@ -47,15 +47,34 @@ internal val NavBarVerticalPadding = 12.dp
 internal val NavBarHorizontalPadding = 20.dp
 
 /**
- * 底栏模糊半径（24.dp 是本项目对"胶囊玻璃"选定的观感值）。
+ * 底栏模糊半径（阶段 11d：**24 → 8 dp**）。
  *
- * ★ **阶段 7 起它有两处消费**，而这两处**必须取同一个值**：
+ * ★ **两处消费，必须取同一个值**：
  * - Tier 2 的 `RenderEffect.createBlurEffect`
  * - Tier 1 的 `GlassParams.blurRadius`（链里的 inner blur）
  *
  * 取同一个值是为了让"跨档切换时糊的程度不跳一下"（`STAGE7-PLAN.md §3` 硬要求 3）。
+ *
+ * ## ★★ 为什么从 24 降到 8（阶段 11d，用户实测反馈「液态玻璃还是没用」）
+ * 24dp 是 **6b 的"毛玻璃"时代**确认的值 —— 那时底栏要的就是"一坨糊掉的半透明"。
+ * 但**液态玻璃不是毛玻璃**：它靠**边缘折射**立起来，模糊只是配角。
+ *
+ * 对参照对象 `OPCameraPro 3.2.10` 的 `LiquidGlassWatermarkEffect` 实测其取向是
+ * **`blurRadius = 0.8`、`tintAlpha = 0.012`** —— 几乎不模糊、几乎不遮挡。
+ * 24dp 的模糊会把胶囊背后的文字**完全糊成均匀的一片灰**，
+ * 于是"玻璃"读起来就是"一块不透明的板" —— 这正是用户看到的现象。
+ *
+ * 8dp 的取舍：仍能柔化背后的高频细节（文字不会与图标打架），
+ * 但**保留了可辨认的形状** —— 那是"透过玻璃看见东西"的必要条件。
+ *
+ * ## 与 `STAGE7-PLAN §8` 第 10 条的关系
+ * 那条写的是"不改 `NAV_BAR_BLUR_RADIUS` / `NOISE_FACTOR` / `FALLBACK_ALPHA`"，
+ * 但它是**阶段 7 的范围约束**，前提是"阶段 7 只做折射、不动 6b 的观感"。
+ * 阶段 11d 的用户诉求正是"液态玻璃要看得出来" ⇒ **该前提已不成立**，
+ * 本条与 [GLASS_SCRIM_ALPHA] 一并经用户指令解锁。
+ * **[NAV_BAR_NOISE_FACTOR] 与 [NAV_BAR_FALLBACK_ALPHA] 未动**（它们只作用于降级档）。
  */
-internal val NavBarBlurRadius = 24.dp
+internal val NavBarBlurRadius = 8.dp
 
 /**
  * 噪声系数（需求 §6 点名 `noiseFactor`）。
@@ -89,11 +108,13 @@ internal const val NAV_BAR_FALLBACK_ALPHA = 0.92f
  * 折射只有 8% 的可见度 —— 那等于"做了折射但看不见"，
  * 而阶段 7 的验收判据恰恰是「玻璃透出内容」「能看出折射位移」。
  *
- * 取 0.22 的依据：**模糊本身已经承担了可读性**（背后的内容被糊掉了，不会与图标文字打架），
- * 因此底面只需要"压一点亮度"而不是"盖住"。**它只影响观感，不影响任何判定**，
- * 若真机上觉得过透或过实，调这一个数即可（不必动 6b 那三个常量）。
+ * 取 0.10 的依据（**阶段 11d 从 0.22 下调**）：
+ * 拿参照对象 `OPCameraPro 3.2.10` 的 `LiquidGlassWatermarkEffect` 对比 ——
+ * 它的 `tintAlpha` 是 **0.012**（几乎不遮）。0.22 会把手边的 [NavBarBlurRadius] 再压一道，
+ * 两者叠加的结果就是"背后的内容完全看不见" ⇒ 用户判定"液态玻璃没用"。
+ * 0.10 保留"压一点亮度、保证图标文字可读"的作用，但**让背后的形状透出来**。
  */
-internal const val GLASS_SCRIM_ALPHA = 0.22f
+internal const val GLASS_SCRIM_ALPHA = 0.10f
 
 /**
  * 滚动内容需要为浮起底栏让出的高度 = 胶囊高度 + 上下各一份纵向留白。
