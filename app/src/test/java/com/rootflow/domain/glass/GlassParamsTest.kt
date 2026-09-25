@@ -5,6 +5,7 @@ import org.junit.jupiter.api.Assertions.assertNotEquals
 import org.junit.jupiter.api.Assertions.assertTrue
 import org.junit.jupiter.api.DisplayName
 import org.junit.jupiter.api.Test
+import kotlin.math.hypot
 
 /**
  * [GlassParams.sanitized] 的单测（`STAGE7-PLAN.md §6.1` 的 `GlassParamsTest`）。
@@ -27,6 +28,10 @@ class GlassParamsTest {
         dispersion: Float = 0f,
         highlightAlpha: Float = 0.08f,
         cornerRadii: FloatArray = floatArrayOf(28f, 28f, 28f, 28f),
+        fresnelPower: Float = 2.4f,
+        fresnelStrength: Float = 0.28f,
+        vibrancy: Float = 1.4f,
+        lightDirection: FloatArray = floatArrayOf(-0.7071f, -0.7071f),
     ) = GlassParams(
         blurRadius = blurRadius,
         refractionHeight = refractionHeight,
@@ -36,6 +41,10 @@ class GlassParamsTest {
         dispersion = dispersion,
         highlightAlpha = highlightAlpha,
         cornerRadii = cornerRadii,
+        fresnelPower = fresnelPower,
+        fresnelStrength = fresnelStrength,
+        vibrancy = vibrancy,
+        lightDirection = lightDirection,
     )
 
     @Test
@@ -210,5 +219,98 @@ class GlassParamsTest {
         assertEquals(left, right, "内容相同必须相等（否则 RenderEffect 会被每帧重建）")
         assertEquals(left.hashCode(), right.hashCode())
         assertNotEquals(left, different)
+    }
+
+    // ── 阶段 11：Fresnel / vibrancy / 光源方向（`STAGE11-PLAN.md §1.5`）────────────
+    // 这四个字段的**观感**只有真机能验，但"取值是否合法"必须在这里穷举 ——
+    // 越界值在真机上的表现是"镜面过曝/看不见"，与"shader 没跑"无法区分。
+
+    @Test
+    @DisplayName("阶段 11 新字段：越界被收进各自区间")
+    fun `stage 11 fields are clamped to their ranges`() {
+        val tooSmall =
+            params(fresnelPower = 0f, fresnelStrength = -1f, vibrancy = 0f).sanitized()
+        assertEquals(GlassParams.MIN_FRESNEL_POWER, tooSmall.fresnelPower)
+        assertEquals(GlassParams.MIN_FRESNEL_STRENGTH, tooSmall.fresnelStrength)
+        assertEquals(GlassParams.MIN_VIBRANCY, tooSmall.vibrancy)
+
+        val tooLarge =
+            params(fresnelPower = 99f, fresnelStrength = 99f, vibrancy = 99f).sanitized()
+        assertEquals(GlassParams.MAX_FRESNEL_POWER, tooLarge.fresnelPower)
+        assertEquals(GlassParams.MAX_FRESNEL_STRENGTH, tooLarge.fresnelStrength)
+        assertEquals(GlassParams.MAX_VIBRANCY, tooLarge.vibrancy)
+    }
+
+    @Test
+    @DisplayName("★ vibrancy 下限是 1.0：本项只提饱和，不允许被调成「去饱和」")
+    fun `vibrancy can never go below identity`() {
+        assertEquals(GlassParams.MIN_VIBRANCY, params(vibrancy = 0.5f).sanitized().vibrancy)
+        assertEquals(1f, params(vibrancy = 1f).sanitized().vibrancy, "1.0 必须原样保留（AGSL 里是恒等变换）")
+    }
+
+    @Test
+    @DisplayName("★ 光源方向被归一化（长于 1 会让镜面过曝、短于 1 会让它看不见）")
+    fun `light direction is normalized`() {
+        val long = params(lightDirection = floatArrayOf(10f, 0f)).sanitized()
+        assertEquals(1f, long.lightDirection[0], 1e-4f)
+        assertEquals(0f, long.lightDirection[1], 1e-4f)
+
+        val short = params(lightDirection = floatArrayOf(0f, 0.01f)).sanitized()
+        assertEquals(0f, short.lightDirection[0], 1e-4f)
+        assertEquals(1f, short.lightDirection[1], 1e-4f)
+
+        val diagonal = params(lightDirection = floatArrayOf(3f, 4f)).sanitized()
+        assertEquals(1f, hypot(diagonal.lightDirection[0], diagonal.lightDirection[1]), 1e-4f)
+    }
+
+    @Test
+    @DisplayName("★ 光源方向：长度恒为 2；零向量与非有限值都回退到默认方向（不是留在原地）")
+    fun `light direction degrades to the default`() {
+        assertEquals(
+            GlassParams.LIGHT_DIRECTION_COMPONENTS,
+            params(lightDirection = floatArrayOf()).sanitized().lightDirection.size,
+        )
+
+        val zero = params(lightDirection = floatArrayOf(0f, 0f)).sanitized()
+        assertTrue(
+            hypot(zero.lightDirection[0], zero.lightDirection[1]) > 0.99f,
+            "零向量必须回退成可用方向（长度约 1）",
+        )
+
+        val nonFinite = params(lightDirection = floatArrayOf(Float.NaN, Float.POSITIVE_INFINITY)).sanitized()
+        assertEquals(1f, hypot(nonFinite.lightDirection[0], nonFinite.lightDirection[1]), 1e-4f)
+
+        // 回退方向 = 默认光源角（左上；屏幕坐标 y 向下 ⇒ 负 y 才是上方）
+        assertTrue(
+            nonFinite.lightDirection[0] < 0f && nonFinite.lightDirection[1] < 0f,
+            "退化输入的兜底方向必须与 GlassParams.DEFAULT_LIGHT_ANGLE_DEGREES 一致",
+        )
+    }
+
+    @Test
+    @DisplayName("★ 光源方向按内容比较（它同样进 RenderEffect 的缓存键）")
+    fun `equality compares light direction by content`() {
+        val left = params(lightDirection = floatArrayOf(-0.7071f, -0.7071f))
+        val right = params(lightDirection = floatArrayOf(-0.7071f, -0.7071f))
+        val different = params(lightDirection = floatArrayOf(0.7071f, 0.7071f))
+
+        assertEquals(left, right, "引用不同的同内容数组必须相等")
+        assertEquals(left.hashCode(), right.hashCode())
+        assertNotEquals(left, different, "换一个光源方向必须被判定为变化（否则镜面会停在旧朝向）")
+    }
+
+    @Test
+    @DisplayName("Default 的四个阶段 11 字段都已填好且在区间内")
+    fun `default fills the stage 11 fields`() {
+        val d = GlassParams.default(blurRadiusPx = 63f, cornerRadiusPx = 28f)
+
+        assertEquals(GlassParams.DEFAULT_FRESNEL_POWER, d.fresnelPower)
+        assertEquals(GlassParams.DEFAULT_FRESNEL_STRENGTH, d.fresnelStrength)
+        assertEquals(GlassParams.DEFAULT_VIBRANCY, d.vibrancy)
+        assertTrue(
+            hypot(d.lightDirection[0], d.lightDirection[1]) > 0.99f,
+            "默认光向必须是单位向量",
+        )
+        assertTrue(d.lightDirection[0] < 0f && d.lightDirection[1] < 0f, "默认光来自左上")
     }
 }

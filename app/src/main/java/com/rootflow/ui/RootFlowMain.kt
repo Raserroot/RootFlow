@@ -269,7 +269,7 @@ internal fun RootFlowMain(
             )
         }
 
-        // ④ 悬浮胶囊底栏（Tab 行 + 底面 + 描边）
+        // ④ 悬浮胶囊底栏（Tab 行 + 底面 + 描边 + 阶段 11 的指示器）
         FloatingNavBar(
             currentTab = currentTab,
             onSelect = onSelectTab,
@@ -277,6 +277,10 @@ internal fun RootFlowMain(
             blurSupported = blurSupported,
             glassTier = glassTier,
             onCapsuleTopMeasured = { top -> barTopInRootPx = top },
+            // ★ 阶段 11：角标**本阶段没有数据源**（`STAGE11-PLAN.md §3.2` 的空能力登记）。
+            //   显式传空表而不是省略参数 —— 省略会让"这里其实什么都没接"被默认值掩盖，
+            //   而 `always_run` chip 的教训（README「未验证」第 4 条）正是这么来的。
+            badges = emptyMap(),
             modifier = Modifier.align(Alignment.BottomCenter),
         )
     }

@@ -46,6 +46,11 @@ class GlassShaderSourceTest {
             "refractionDirection",
             "dispersion",
             "highlightAlpha",
+            // 阶段 11（`STAGE11-PLAN.md §1.5`）：四项必须与 setUniforms 同步增补
+            "fresnelPower",
+            "fresnelStrength",
+            "vibrancy",
+            "lightDirection",
         )
 
     /** ①：从 AGSL 里取 `uniform <type> <name>;` 的 name 集合。 */
@@ -172,6 +177,63 @@ class GlassShaderSourceTest {
         assertTrue(
             Regex("""uniform\s+float2\s+refractionDirection\s*;""").containsMatchIn(LIQUID_GLASS_AGSL),
             "归一化的 float2（规格 §五）",
+        )
+    }
+
+    // ── 阶段 11（`STAGE11-PLAN.md §1`）──────────────────────────────────────
+    // 这一节是"光学增强"里唯一能脱离真机验证的部分：AGSL 是运行时编译的字符串，
+    // 沙箱没有 GPU，因此**只能用静态断言钉住算法写法**。真机观感见 §8 项 1–3。
+
+    @Test
+    @DisplayName("★ vibrancy 是 mix(luma, color, vibrancy)（1.0 处必须可退化成恒等）")
+    fun `vibrancy is a mix towards the luma`() {
+        assertTrue(
+            Regex("""mix\(\s*float3\(\s*luma\s*\)\s*,\s*color\s*,\s*vibrancy\s*\)""")
+                .containsMatchIn(LIQUID_GLASS_AGSL),
+            "提饱和必须是 `mix(float3(luma), color, vibrancy)`：vibrancy = 1.0 时恒等，" +
+                "其他任何写法都会让「关掉这一项」变成另一套颜色运算",
+        )
+        assertTrue(
+            Regex("""dot\(\s*color\s*,\s*float3\(\s*0\.2126""").containsMatchIn(LIQUID_GLASS_AGSL),
+            "亮度必须用 Rec.709 权重（0.2126/0.7152/0.0722），不是简单平均",
+        )
+    }
+
+    @Test
+    @DisplayName("★ Fresnel 用 edgeWeight 的幂把高光压到窄边带（不是又加一层均匀描边）")
+    fun `fresnel concentrates the highlight on the rim`() {
+        assertTrue(
+            Regex("""pow\(\s*edgeWeight\s*,\s*fresnelPower\s*\)""").containsMatchIn(LIQUID_GLASS_AGSL),
+            "镜面项必须是 pow(edgeWeight, fresnelPower)：直接乘 edgeWeight 就退回 `highlightAlpha` 的均匀观感",
+        )
+        assertTrue(
+            Regex("""max\(\s*dot\(\s*outward\s*,\s*lightDirection\s*\)\s*,\s*0\.0\s*\)""")
+                .containsMatchIn(LIQUID_GLASS_AGSL),
+            "受光侧必须由 max(dot(外法线, 光向), 0) 判定 —— 少了 max 会让背光侧变成负值（暗斑）",
+        )
+    }
+
+    @Test
+    @DisplayName("★ 光源真的参与了运算（阶段 7 的 refractionDirection 就是「声明了但没用」的反面教材）")
+    fun `light direction actually takes part in the computation`() {
+        assertTrue(
+            LIQUID_GLASS_AGSL.contains("lightDirection") &&
+                Regex("""dot\([^)]*lightDirection""").containsMatchIn(LIQUID_GLASS_AGSL),
+            "lightDirection 必须出现在一次 dot 里；只声明不使用会重演 refractionDirection 的遗留",
+        )
+    }
+
+    @Test
+    @DisplayName("★ 外法线取 grad 本身（内负外正 ⇒ 梯度朝外），不得静默取负")
+    fun `outward normal is the sdf gradient itself`() {
+        assertTrue(
+            Regex("""float2\s+outward\s*=\s*grad\s*;""").containsMatchIn(LIQUID_GLASS_AGSL),
+            "sdRoundRect 内负外正 ⇒ 梯度指向外部 ⇒ 外法线就是 grad。写成 -grad 会让亮暗侧整体翻转" +
+                "（那在真机上是「光从右下打过来」，而 §8 项 1 正是验这个）",
+        )
+        assertFalse(
+            Regex("""float2\s+outward\s*=\s*-\s*grad\s*;""").containsMatchIn(LIQUID_GLASS_AGSL),
+            "确需翻转时应连同本条断言一起改，并登记到 STAGE11-PLAN §8 项 1",
         )
     }
 }

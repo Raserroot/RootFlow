@@ -1,5 +1,10 @@
 package com.rootflow.domain.glass
 
+import kotlin.math.PI
+import kotlin.math.cos
+import kotlin.math.sin
+import kotlin.math.sqrt
+
 /**
  * 液态玻璃的**参数集**（规格 `docs/liquid-glass-spec.md` §三 uniform 表 + §五 参数建议）。
  *
@@ -25,6 +30,11 @@ package com.rootflow.domain.glass
  * @property dispersion 色散强度（本阶段恒 0；见类 KDoc）
  * @property highlightAlpha 边缘高光 alpha（规格经验值 `0.08 * intensity`）
  * @property cornerRadii 四角半径 px，顺序 **TL, TR, BR, BL**（规格 §三 的 `float4` 约定）
+ * @property fresnelPower 边缘镜面的锐度指数（阶段 11）。越大 ⇒ 高光越集中在最外一圈
+ * @property fresnelStrength 边缘镜面的强度（阶段 11）。与 [highlightAlpha] **叠加**，不取代它
+ * @property vibrancy 背景提饱和倍率（阶段 11）。**1.0 = 恒等变换**（与"不开此特性"逐像素等价）
+ * @property lightDirection 归一化的光源方向 `[x, y]`（阶段 11）。同时驱动 AGSL 的 Fresnel
+ *   与边框渐变轴 —— 两处必须同源，否则"镜面亮在左上、边框亮在右下"（`STAGE11-PLAN.md §1.3`）
  */
 data class GlassParams(
     val blurRadius: Float,
@@ -35,6 +45,10 @@ data class GlassParams(
     val dispersion: Float,
     val highlightAlpha: Float,
     val cornerRadii: FloatArray,
+    val fresnelPower: Float,
+    val fresnelStrength: Float,
+    val vibrancy: Float,
+    val lightDirection: FloatArray,
 ) {
     /**
      * 收敛到规格的合法区间（**唯一入口**；调用方不要自己 clamp）。
@@ -61,6 +75,10 @@ data class GlassParams(
             dispersion = dispersion.orZero().coerceIn(MIN_DISPERSION, MAX_DISPERSION),
             highlightAlpha = highlightAlpha.orZero().coerceIn(MIN_HIGHLIGHT_ALPHA, MAX_HIGHLIGHT_ALPHA),
             cornerRadii = cornerRadii.sanitizedRadii(),
+            fresnelPower = fresnelPower.orZero().coerceIn(MIN_FRESNEL_POWER, MAX_FRESNEL_POWER),
+            fresnelStrength = fresnelStrength.orZero().coerceIn(MIN_FRESNEL_STRENGTH, MAX_FRESNEL_STRENGTH),
+            vibrancy = vibrancy.orZero().coerceIn(MIN_VIBRANCY, MAX_VIBRANCY),
+            lightDirection = lightDirection.sanitizedDirection(),
         )
 
     /**
@@ -80,7 +98,11 @@ data class GlassParams(
             samplingStability == other.samplingStability &&
             dispersion == other.dispersion &&
             highlightAlpha == other.highlightAlpha &&
-            cornerRadii.contentEquals(other.cornerRadii)
+            cornerRadii.contentEquals(other.cornerRadii) &&
+            fresnelPower == other.fresnelPower &&
+            fresnelStrength == other.fresnelStrength &&
+            vibrancy == other.vibrancy &&
+            lightDirection.contentEquals(other.lightDirection)
     }
 
     override fun hashCode(): Int {
@@ -92,6 +114,10 @@ data class GlassParams(
         result = 31 * result + dispersion.hashCode()
         result = 31 * result + highlightAlpha.hashCode()
         result = 31 * result + cornerRadii.contentHashCode()
+        result = 31 * result + fresnelPower.hashCode()
+        result = 31 * result + fresnelStrength.hashCode()
+        result = 31 * result + vibrancy.hashCode()
+        result = 31 * result + lightDirection.contentHashCode()
         return result
     }
 
@@ -124,6 +150,68 @@ data class GlassParams(
         const val MIN_HIGHLIGHT_ALPHA: Float = 0f
         const val MAX_HIGHLIGHT_ALPHA: Float = 0.5f
 
+        // ── 阶段 11：光学增强（Fresnel 镜面 / 背景提饱和 / 光源方向） ──────────────
+
+        /** 镜面锐度：1 = 线性（整条边缘带均匀），越大越集中在最外一圈。 */
+        const val MIN_FRESNEL_POWER: Float = 1f
+        const val MAX_FRESNEL_POWER: Float = 6f
+
+        /** 镜面强度：**0 = 关闭该项**（回到只有 `highlightAlpha` 的 `STAGE7` 观感）。 */
+        const val MIN_FRESNEL_STRENGTH: Float = 0f
+        const val MAX_FRESNEL_STRENGTH: Float = 0.5f
+
+        /**
+         * 背景提饱和倍率：**下限是 1.0，不是 0**。
+         *
+         * 语义是"把透过玻璃的颜色调浓"，而 1.0 就是恒等变换
+         * （AGSL 里 `mix(luma, color, vibrancy)` 在 1.0 处恰好还原原色）。
+         * 允许 < 1 会让这个参数变成"去饱和"，而那不是本特性要干的事 ——
+         * 一个能顺手把玻璃调成灰的旋钮，迟早会被误用成"关掉颜色"。
+         */
+        const val MIN_VIBRANCY: Float = 1f
+        const val MAX_VIBRANCY: Float = 2f
+
+        /** 光源方向的向量分量个数（`float2`）。 */
+        const val LIGHT_DIRECTION_COMPONENTS: Int = 2
+
+        /** 方向向量的最小可用长度：短于它按"零向量"处理（见 [sanitizedDirection]）。 */
+        const val MIN_DIRECTION_LENGTH: Float = 1e-4f
+
+        // ── 阶段 11 的默认值（观感取向，全部有单测钉住） ────────────────────────
+
+        /** 默认镜面锐度：高光落在最外约 1/3 的环带里。 */
+        const val DEFAULT_FRESNEL_POWER: Float = 2.4f
+
+        /**
+         * 默认镜面强度。
+         *
+         * 0.28 与既有 `highlightAlpha = 0.08` 叠加后，迎光侧的边缘亮度约为背光侧的 3 倍 ——
+         * 这个比例是"看得出方向、但不像贴了一条白边"的经验分界。
+         */
+        const val DEFAULT_FRESNEL_STRENGTH: Float = 0.28f
+
+        /**
+         * 默认提饱和倍率（1.4 = 比原色浓四成）。
+         *
+         * 本项是阶段 11 的**点名的升级项**（不是可选开关），因此默认开。
+         * 风险等级最低：它只改颜色浓淡，不会崩、不会黑屏、不吃额外采样。
+         */
+        const val DEFAULT_VIBRANCY: Float = 1.4f
+
+        /**
+         * 默认光源角（度）：**左上方**。
+         *
+         * ## ★ 单一真相源
+         * `ui/theme/NavBarLight.DEFAULT_ANGLE_DEGREES` **引用本常量**（UI 依赖 domain 是合法方向）。
+         * 两处各写一个 `-135f` 会漂移，而漂移的表现是"镜面亮在左上、边框却亮在右下"
+         * —— 只有真机截图能发现（`STAGE11-PLAN.md §1.3`）。
+         *
+         * ## 坐标约定
+         * 屏幕坐标 **y 轴向下** ⇒ 左上是 `(-0.707, -0.707)`。
+         * 若按数学课本的习惯写成 +135°，光会跑到**右下角**。
+         */
+        const val DEFAULT_LIGHT_ANGLE_DEGREES: Float = -135f
+
         /** 四角半径个数（`float4`：TL, TR, BR, BL）。 */
         const val CORNER_RADII_COUNT: Int = 4
 
@@ -147,6 +235,10 @@ data class GlassParams(
                 dispersion = MIN_DISPERSION,
                 highlightAlpha = 0.08f,
                 cornerRadii = FloatArray(CORNER_RADII_COUNT) { cornerRadiusPx },
+                fresnelPower = DEFAULT_FRESNEL_POWER,
+                fresnelStrength = DEFAULT_FRESNEL_STRENGTH,
+                vibrancy = DEFAULT_VIBRANCY,
+                lightDirection = defaultLightDirection(),
             ).sanitized()
 
         /**
@@ -171,5 +263,34 @@ data class GlassParams(
                     .orZero()
                     .coerceAtLeast(0f)
             }
+
+        /**
+         * 光源方向的清洗（阶段 11）：补齐到 2 分量 → 逐项归零 → **归一化**。
+         *
+         * ## 为什么必须归一化，而不能像 [sanitizedRadii] 那样只处理长度与符号
+         * AGSL 里用的是 `max(dot(n, lightDirection), 0.0)`：
+         * - 向量长于 1 ⇒ 点积超过 1 ⇒ 镜面项**过曝**（边缘糊成一条白线，玻璃感反而消失）
+         * - 向量短于 1 ⇒ 高光弱到看不见，表现为"Fresnel 没生效"
+         *   —— 而那与"shader 根本没跑"在截图上一模一样，是最难定位的一类失败
+         *
+         * ## 零向量的处置：**回退到默认方向**，不是留在原地
+         * 零向量在 AGSL 里让 `dot` 恒为 0 ⇒ 镜面只剩"不依赖方向的那一半"，
+         * 看起来像"光突然没了"。回退到默认方向让退化输入仍有合理观感 ——
+         * 与 [MIN_SAMPLING_STABILITY] 把 0 抬到 0.001 是同一条纪律
+         * （**非法输入在边界上收敛一次，内部只面对合法值**）。
+         */
+        private fun FloatArray.sanitizedDirection(): FloatArray {
+            val x = getOrElse(0) { 0f }.orZero()
+            val y = getOrElse(1) { 0f }.orZero()
+            val length = sqrt(x * x + y * y)
+            if (length < MIN_DIRECTION_LENGTH) return defaultLightDirection()
+            return floatArrayOf(x / length, y / length)
+        }
+
+        /** 默认光源方向的单位向量（由 [DEFAULT_LIGHT_ANGLE_DEGREES] 换算）。 */
+        private fun defaultLightDirection(): FloatArray {
+            val radians = DEFAULT_LIGHT_ANGLE_DEGREES * PI.toFloat() / 180f
+            return floatArrayOf(cos(radians), sin(radians))
+        }
     }
 }

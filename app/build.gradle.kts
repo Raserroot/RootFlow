@@ -54,11 +54,12 @@ android {
         applicationId = "com.rootflow.app"
         minSdk = 26
         targetSdk = 34
-        // ★ v1.1 发布时更新（此前是 1.0.0 / code 2）。
+        // ★ 阶段 11 发布时更新（此前是 1.1.0 / code 3）。
         //   versionName 会经 BuildConfig 显示在主页「App 版本」与设置页「关于」，
         //   因此改这里就等于改了真机上看到的版本号 —— 发布时**必须**与 tag 一致。
-        versionCode = 3
-        versionName = "1.1.0"
+        //   ⚠️ 本版本**未经真机验证**（`STAGE11-PLAN.md §5`）⇒ tag 只能带 `-unverified`。
+        versionCode = 4
+        versionName = "1.2.0"
 
         testInstrumentationRunner = "androidx.test.runner.AndroidJUnitRunner"
     }

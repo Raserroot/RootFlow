@@ -219,6 +219,11 @@ internal class AndroidGlassEffectFactory : GlassEffectFactory {
         shader.setFloatUniform("refractionDirection", REFRACTION_DIRECTION_X, REFRACTION_DIRECTION_Y)
         shader.setFloatUniform("dispersion", params.dispersion)
         shader.setFloatUniform("highlightAlpha", params.highlightAlpha)
+        // 阶段 11：光学增强（顺序与 AGSL 里的声明顺序无关，但四个名字都必须逐字一致）
+        shader.setFloatUniform("fresnelPower", params.fresnelPower)
+        shader.setFloatUniform("fresnelStrength", params.fresnelStrength)
+        shader.setFloatUniform("vibrancy", params.vibrancy)
+        shader.setFloatUniform("lightDirection", params.lightDirection)
     }
 
     private companion object {
@@ -256,6 +261,18 @@ internal class AndroidGlassEffectFactory : GlassEffectFactory {
  * 1. `uniform shader content;` 存在，且名字与 `createRuntimeShaderEffect(shader, "content")` 一致
  * 2. `lensMap` 是 `x^4 * (5 - 4x)`（规格 §一.5：**不是**标准 `smootherstep`，别写错）
  * 3. 源码里**不含** `#include`（AGSL 没有预处理器，写了必然编译失败）
+ *
+ * ## 阶段 11 新增（三处，全部**未经真机验证** —— `STAGE11-PLAN.md §5`）
+ * 1. **vibrancy**：`mix(luma, color, vibrancy)`。取 1.0 时恒等 ⇒ 这一项**永远可以安全地"关掉"**
+ * 2. **Fresnel 镜面**：`pow(edgeWeight, fresnelPower)` 把高光压到窄边缘带，
+ *    再用 `dot(outward, lightDirection)` 判受光侧。与既有的 `highlightAlpha` **叠加**：
+ *    后者是"玻璃还在"的基础辉光（`STAGE7` 验收项 3 的判据），前者是方向性镜面
+ * 3. **外法线方向的更正**：`sdfGradient` 的旧注释写的是「指向玻璃内部」，
+ *    但按 `sdRoundRect` 的定义（内负外正）梯度只能**指向外部**。
+ *    阶段 11 首次真正用到这个方向（Fresnel），因此把推导写在了使用处。
+ *    **旧注释不影响 `offset` 的正确性**（那里只关心"沿梯度推多远"，与朝向无关），
+ *    因此本次**不改注释、不改既有行为**，只在使用处写清真正的朝向 —— 见 `§8` 项 1
+ *    的真机判据（若观感与预期相反，一行 `-grad` 即可纠正）。
  */
 internal const val LIQUID_GLASS_AGSL: String = """
     // ── 与 Kotlin 侧的契约（GlassShaderSourceTest 三向断言）─────────────────────
@@ -270,6 +287,10 @@ internal const val LIQUID_GLASS_AGSL: String = """
     // @uniform refractionDirection  float2   AndroidGlassEffectFactory.setUniforms
     // @uniform dispersion           float    AndroidGlassEffectFactory.setUniforms
     // @uniform highlightAlpha       float    AndroidGlassEffectFactory.setUniforms
+    // @uniform fresnelPower         float    AndroidGlassEffectFactory.setUniforms（阶段 11）
+    // @uniform fresnelStrength      float    AndroidGlassEffectFactory.setUniforms（阶段 11）
+    // @uniform vibrancy             float    AndroidGlassEffectFactory.setUniforms（阶段 11）
+    // @uniform lightDirection       float2   AndroidGlassEffectFactory.setUniforms（阶段 11）
 
     uniform shader content;
     uniform float2 size;
@@ -282,6 +303,10 @@ internal const val LIQUID_GLASS_AGSL: String = """
     uniform float2 refractionDirection;
     uniform float dispersion;
     uniform float highlightAlpha;
+    uniform float fresnelPower;
+    uniform float fresnelStrength;
+    uniform float vibrancy;
+    uniform float2 lightDirection;
 
     // 圆角矩形 SDF（负值 = 在内部）
     float sdRoundRect(float2 p, float2 halfSize, float radius) {
@@ -352,8 +377,23 @@ internal const val LIQUID_GLASS_AGSL: String = """
             );
         }
 
+        // ── 背景提饱和 vibrancy（阶段 11）──────────────────────────────────
+        // vibrancy == 1.0 ⇒ mix 恒等 ⇒ 与"没有这一项"逐像素等价（可关、可不敢用）
+        float luma = dot(color, float3(0.2126, 0.7152, 0.0722));
+        color = mix(float3(luma), color, vibrancy);
+
         // ── 边缘高光（规格 §三.8：靠边最亮）────────────────────────────────
         color += float3(highlightAlpha) * edgeWeight;
+
+        // ── Fresnel 镜面（阶段 11）：受光侧比背光侧亮 ───────────────────────
+        // ★ 外法线的推导（**这里与 sdfGradient 的旧注释相反，见文件头第 4 条**）：
+        //   sdRoundRect 内部为负、外部为正 ⇒ 梯度指向 SDF **增大**方向 ⇒ 指向外部。
+        //   故 grad 本身就是外法线，**不取负**。
+        //   若真机上发现亮暗侧反了，把下面这行的 grad 改成 -grad 即可（`STAGE11-PLAN.md §8` 项 1）
+        float2 outward = grad;
+        float ndl = max(dot(outward, lightDirection), 0.0);
+        float rim = pow(edgeWeight, fresnelPower);
+        color += float3(rim * (0.35 + 0.65 * ndl) * fresnelStrength);
 
         return float4(color, 1.0);
     }
