@@ -13,42 +13,48 @@ import androidx.compose.ui.graphics.drawscope.drawIntoCanvas
 import androidx.compose.ui.graphics.nativeCanvas
 
 /**
- * 底栏的**交互高光**（阶段 11b）—— 一枚跟着手指跑的光晕，实时渲染。
+ * 底栏的**交互高光**（阶段 11b 实现 → **阶段 11c 起不参与生产，纯记录**）。
  *
- * ## 它解决什么问题
- * 阶段 11 的第一版底栏在按住时**毫无反馈**：指示器只是按弹簧滑过去，
- * 玻璃本身不动。缺失的正是"液态"最直观的那一半：
- * **手指按住哪里，哪里就应该亮起来**。
+ * # ★★ 现状：**不要在 `FloatingNavBar` 里挂回它**
+ * 本效果在真机上**两次**造成"拖动时整块底栏变死白"：
  *
- * ## ★★ 一处**必须偏离参考实现**的地方（真机/模拟器实测踩出来的）
- * 参考实现 [`Kyant0/AndroidLiquidGlass`](https://github.com/Kyant0/AndroidLiquidGlass)
- * 的 `InteractiveHighlight` 用 `BlendMode.Plus`（即 `PorterDuff.Mode.ADD`，**加法饱和**）。
- * 本版照抄之后，**在模拟器上拖动时整块底栏变成一团死白** —— 根因不是 shader 写错，而是**底色不同**：
- *
- * | | 参考实现 | RootFlow |
+ * | 轮次 | 表面现象 | 真因 |
  * |---|---|---|
- * | 底栏底色 | 深色（`Color(0xFF121212).copy(0.4f)`） | 浅色主题下是 `surface` + 玻璃，约 **`#F7F7F7`** |
- * | ADD 0.15 白的结果 | 明显提亮，不溢出 | `247 + 38 = 285` ⇒ **溢出，纯白** |
+ * | 11b | 拖动时一团不透明纯白 | `main` 返回了**非 premultiplied** 颜色：`float4(1,1,1,0.1)` 里 RGB(1.0) > A(0.1) 是非法值，渲染器当成不透明的白画出来 |
+ * | 11c | 修完①后**仍然死白** | `smoothstep(radius, radius * 0.5, dist)` 的 **edge0 >= edge1 是未定义行为**。模拟器（SwiftShader 软件渲染）恰好给出"中心亮、边缘淡"，**真机 GPU 返回恒定 1** ⇒ 整块拉满 |
  *
- * 加法混合在**已经接近 255 的底色**上没有任何"提亮空间"：任何强度的白都会瞬间饱和。
- * 因此本版改用 **`SrcOver`（普通 alpha 叠加）**，并收窄半径、降低强度：
+ * ## 为什么整个摘掉，而不是继续修
+ * 1. **两个参照对象的底栏都没有这个效果**：`OPCameraPro 2.10` 是"悬浮胶囊 + 药丸指示器"，
+ *    `LSPosed 2.1.1` 是"贴底平栏 + 无指示器、纯靠颜色与字重区分"。跟手光晕是抄第三方 demo
+ *    （`Kyant0/AndroidLiquidGlass`）时自己加的，**不是需求**。
+ * 2. **它的收益远小于代价**：收益是"按下去有一团光"，代价是**AGSL 在不同 GPU 后端上的
+ *    行为差异无法在本项目的验证能力内保证** —— 而本项目没有真机在环（`STAGE11-PLAN.md §5`）。
+ * 3. 留档而不是删除：这是一次**有据可查的否决**，将来若要重做，
+ *    至少知道"未定义行为"与"premultiplied"这两个坑在这里踩过。
+ *    处置方式与 [NavBarElastic] 一致（已评估、不参与生产、保留实现与 KDoc）。
  *
- * | 常量 | 照抄参考的值 | 本版 | 理由 |
- * |---|---|---|---|
- * | 混合模式 | `ADD` | `SrcOver` | 浅底上不会饱和（见上表） |
- * | [GLOW_RADIUS_FRACTION] | `1.5` | `0.7` | 1.5 × 190px = 285px，几乎盖满整条胶囊 |
- * | [GLOW_CORE_ALPHA] | `0.15` | `0.10` | 配合 SrcOver 的观感取值 |
- * | 整层 wash | 有（`Plus`） | **删除** | 它是"整片白"的直接来源，且 SrcOver 下与光晕重复 |
+ * ## 若将来真要复活它，必须同时满足
+ * - 用**合法顺序**的边沿（`1.0 - smoothstep(0.5r, r, dist)`），不依赖任何未定义行为
+ * - 返回 **premultiplied** 颜色（`half4(rgb * a, a)`）
+ * - **在真机上按 §8 的判据验过**（模拟器的软件渲染**不能**作为这个效果通过的依据 ——
+ *   这正是 11b 误判"已修"的原因）
  *
- * ## 为什么是"实时"的
- * `RuntimeShader` 的 uniform 在**每次绘制**前重设（`position` 直接取手势当前坐标），
- * 而 shader 对象本身**只建一次**。这与 `LiquidGlassRenderer` 的纪律一致：
- * **缓存对象、更新参数**，绝不每帧重建。
+ * ---
  *
- * ## 无可测性（诚实声明）
- * `android.graphics.RuntimeShader` 是 final 平台类，纯 JVM 下会抛
- * `Method … not mocked` ⇒ **本文件的行为由设备承担**。
- * 能测的只有源码字符串的静态断言（见 [NAV_BAR_GLOW_AGSL] 的契约注释）。
+ * ## 原始设计（保留作为技术记录）
+ * 一枚跟着手指跑的光晕，实时渲染：AGSL 里按到手指的距离做径向衰减，
+ * uniform 每帧更新、shader 对象只建一次。
+ *
+ * 与参考实现的差异（当时是为了避开浅色底饱和）：
+ * | 项 | 参考实现 | 本实现 |
+ * |---|---|---|
+ * | 混合 | `BlendMode.Plus` / `PorterDuff.Mode.ADD` | `SrcOver`（浅色底上用加法会瞬间饱和）|
+ * | 半径 | `1.5 × minDimension` | `0.7 ×`（1.5 几乎盖满整条胶囊）|
+ * | 颜色 uniform | `layout(color)` | 普通 `float4`（绕开颜色空间转换）|
+ *
+ * ## 无可测性
+ * `android.graphics.RuntimeShader` 是 final 平台类 ⇒ 纯 JVM 下无法断言，
+ * **本文件的行为只能由设备承担**。这也是它被摘掉的原因之一。
  */
 internal const val NAV_BAR_GLOW_AGSL: String =
     """
@@ -65,15 +71,22 @@ internal const val NAV_BAR_GLOW_AGSL: String =
 
     half4 main(float2 coord) {
         float dist = distance(coord, position);
-        // ★ 边沿顺序（radius → radius/2）是**反的**，这一点必须照抄参考实现：
-        //   GLSL 规范说 edge0 >= edge1 时结果未定义，但两侧的 clamp 会把 t 拉回 0..1，
-        //   于是得到"离手指越近越亮"的径向分布。
-        //   若改成 (0.5r → r)，中心会变成暗的、外圈亮 —— 那是空心甜甜圈，不是光晕。
-        float intensity = smoothstep(radius, radius * 0.5, dist);
+        // ★★★ 光晕的径向分布 —— **这里曾经是死白的真机根因**（2026-09-25 第二轮）
+        //
+        // 上一版写的是 `smoothstep(radius, radius * 0.5, dist)`，即 **edge0 > edge1**。
+        // GLSL/AGSL 规范明写：**edge0 >= edge1 时结果是未定义的**。
+        // - 模拟器（SwiftShader 软件渲染）恰好给出"中心亮、边缘淡"的合理结果 ⇒ 我据此判了"已修"
+        // - **真机 GPU 返回了恒定 1** ⇒ 整个矩形强度拉满 ⇒ 用户看到的"拖动时整块死白"
+        //
+        // 现在写成**合法顺序**的 `1.0 - smoothstep(0.5r, r, dist)`：
+        //   dist <= 0.5r ⇒ smoothstep = 0 ⇒ intensity = 1（中心最亮）
+        //   dist >= r    ⇒ smoothstep = 1 ⇒ intensity = 0（边缘透明）
+        // 这个写法**不依赖任何后端实现**，软件与硬件渲染结果一致。
+        float intensity = 1.0 - smoothstep(radius * 0.5, radius, dist);
         // ★★ 必须返回 **premultiplied** 颜色（AGSL/SkSL 的 main 约定）。
         //   写成 `return glowColor * intensity;` 会得到 float4(1, 1, 1, 0.1) ——
         //   RGB(1.0) > A(0.1) 是**非法的 premultiplied 值**，渲染器会把它当成
-        //   **不透明的白**画出来：这就是"拖动时整块底栏变死白"的最终成因。
+        //   **不透明的白**画出来。
         //   先把 alpha 算出来、再让 rgb 乘上它，才满足 rgb <= a 的约束。
         float a = glowColor.a * intensity;
         return half4(glowColor.rgb * a, a);

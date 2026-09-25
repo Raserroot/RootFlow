@@ -364,12 +364,10 @@ internal fun FloatingNavBar(
                                 release()
                             },
                         )
-                    }
-                    // ⑥ 交互高光：**画在最后 ⇒ 在最上层**（理由见 [navBarGlow] 的 KDoc）
-                    .navBarGlow(
-                        progress = { pressProgress.value },
-                        position = { finger },
-                    ),
+                    },
+            // ⑥ 交互高光（跟手 AGSL 光晕）**在阶段 11c 摘除** —— 它在真机上两次造成
+            //   "拖动时整块死白"（非 premultiplied 返回值 + smoothstep 的未定义行为）。
+            //   原因、取舍与复活条件见 `NavBarGlow.kt` 的文件头；处置同 `NavBarElastic`。
         ) {
             // 液态指示器：画在 Tab 内容**之下**（它是背景，不该盖住图标）
             if (indicatorWidthPx > 0f && indicatorHeightPx > 0f) {

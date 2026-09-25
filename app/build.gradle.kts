@@ -54,15 +54,16 @@ android {
         applicationId = "com.rootflow.app"
         minSdk = 26
         targetSdk = 34
-        // ★ 阶段 11b 修复版（此前是 1.3.0 / code 5）。1.3.0 发出去后用户报
-        //   「拖动时底栏变成死白」—— 根因是高光 shader 返回了非 premultiplied 颜色
-        //   （`float4(1,1,1,0.1)` 里 RGB > A），渲染器把它当成不透明的白画了出来。
-        //   已在模拟器上复现并验证修复（见 `PROJECT_STATE.md`「阶段 11b 收尾记录」）。
+        // ★ 阶段 11c（此前是 1.3.1 / code 6）。1.3.1 只修掉了「非 premultiplied 返回值」，
+        //   真机上**仍然死白** —— 真因是光晕 shader 里 `smoothstep(radius, radius*0.5, dist)`
+        //   的 **edge0 >= edge1 属于未定义行为**：模拟器（SwiftShader）恰好算对，
+        //   真机 GPU 返回恒定 1。本版**把整个跟手光晕摘除**（两个参照对象的底栏都没有这个效果），
+        //   底栏从此不含任何"依赖后端实现"的 AGSL —— 除了 STAGE7 那套玻璃（它的返回值 alpha=1，合法）。
         //   versionName 会经 BuildConfig 显示在主页「App 版本」与设置页「关于」，
         //   因此改这里就等于改了真机上看到的版本号 —— 发布时**必须**与 tag 一致。
         //   ⚠️ 本版本**未经真机验证**（`STAGE11-PLAN.md §5`）⇒ tag 只能带 `-unverified`。
-        versionCode = 6
-        versionName = "1.3.1"
+        versionCode = 7
+        versionName = "1.3.2"
 
         testInstrumentationRunner = "androidx.test.runner.AndroidJUnitRunner"
     }
