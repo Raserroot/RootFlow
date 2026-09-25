@@ -54,12 +54,13 @@ android {
         applicationId = "com.rootflow.app"
         minSdk = 26
         targetSdk = 34
-        // ★ 阶段 11 发布时更新（此前是 1.1.0 / code 3）。
+        // ★ 阶段 11b 发布时更新（此前是 1.2.0 / code 4 —— 那一版指示器是静态圆，
+        //   用户实测「还是不行」，故重做为膨胀 + 拉伸 + 跟手高光的液态指示器）。
         //   versionName 会经 BuildConfig 显示在主页「App 版本」与设置页「关于」，
         //   因此改这里就等于改了真机上看到的版本号 —— 发布时**必须**与 tag 一致。
         //   ⚠️ 本版本**未经真机验证**（`STAGE11-PLAN.md §5`）⇒ tag 只能带 `-unverified`。
-        versionCode = 4
-        versionName = "1.2.0"
+        versionCode = 5
+        versionName = "1.3.0"
 
         testInstrumentationRunner = "androidx.test.runner.AndroidJUnitRunner"
     }

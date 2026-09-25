@@ -1,6 +1,7 @@
 package com.rootflow.ui.component
 
 import androidx.compose.animation.animateColorAsState
+import androidx.compose.animation.core.Animatable
 import androidx.compose.animation.core.Spring
 import androidx.compose.animation.core.animate
 import androidx.compose.animation.core.spring
@@ -31,19 +32,24 @@ import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableFloatStateOf
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
+import androidx.compose.runtime.rememberCoroutineScope
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
 import androidx.compose.ui.draw.drawWithCache
+import androidx.compose.ui.draw.shadow
 import androidx.compose.ui.geometry.CornerRadius
+import androidx.compose.ui.geometry.Offset
 import androidx.compose.ui.graphics.Brush
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.graphics.drawscope.Stroke
 import androidx.compose.ui.graphics.graphicsLayer
 import androidx.compose.ui.input.pointer.pointerInput
+import androidx.compose.ui.input.pointer.util.VelocityTracker
 import androidx.compose.ui.layout.onGloballyPositioned
 import androidx.compose.ui.layout.positionInRoot
+import androidx.compose.ui.platform.LocalDensity
 import androidx.compose.ui.unit.Dp
 import androidx.compose.ui.unit.dp
 import com.rootflow.domain.glass.GlassTier
@@ -64,6 +70,8 @@ import dev.chrisbanes.haze.HazeTint
 import dev.chrisbanes.haze.hazeEffect
 import dev.chrisbanes.haze.materials.ExperimentalHazeMaterialsApi
 import dev.chrisbanes.haze.materials.HazeMaterials
+import kotlinx.coroutines.delay
+import kotlinx.coroutines.launch
 
 /**
  * 悬浮胶囊底栏（需求 §6：`NavigationBar` 自定义 + Haze 毛玻璃 + 液态玻璃高光边框）。
@@ -72,9 +80,10 @@ import dev.chrisbanes.haze.materials.HazeMaterials
  * ```
  * 父 Box（横向 20dp / 纵向 12dp 留白 + 导航栏 inset）
  *   └─ 胶囊 Box（高 64dp，测量位置回填给玻璃层）
- *       ├─ 指示器（阶段 11：全栏唯一、可滑动、会形变）
- *       ├─ Tab Row：内容 + 底面遮罩 + （Tier 3 才有的）hazeEffect + 微光边框
- *       └─ ？玻璃层不在这里（见下）
+ *       ├─ 液态指示器（全栏唯一、可滑动、会膨胀 / 拉伸）
+ *       ├─ Tab Row：内容 + 底面遮罩 + （Tier 3 才有的）hazeEffect
+ *       ├─ 液态玻璃微光边框
+ *       └─ 交互高光（手指按住哪里，哪里亮）
  * ```
  *
  * ## ★★ 玻璃层为什么不在这里，而在 `RootFlowMain`
@@ -95,8 +104,6 @@ import dev.chrisbanes.haze.materials.HazeMaterials
  * | `HazeState.blurEnabled` | `rememberHazeState(blurEnabled = …)`（`RootFlowMain`） |
  * | `HazeEffectScope.blurEnabled` | 本文件的 `hazeEffect` block |
  *
- * 解析优先级（1.6.10 源码 `resolveBlurEnabled()`）：
- * `block 里设过` > `state != null 时取 state.blurEnabled` > `HazeDefaults.blurEnabled()`。
  * **`Modifier.hazeSource` 没有 `enabled` 参数**（签名只有 `(state, zIndex, key)`）。
  *
  * ## ★ 三档与"谁负责模糊"（阶段 7，已批准决策 P1）
@@ -109,30 +116,40 @@ import dev.chrisbanes.haze.materials.HazeMaterials
  * 前两档**必须**不调：同一区域糊两次 = 双采样源 + 性能翻倍（`STAGE7-PLAN.md §1` 冲突点 1）。
  * 但**底面与边框三档都保留** —— 它们分别是"文字可读性"与"玻璃感的一半"，不是 Haze 的职责。
  *
- * # ★★★ 阶段 11：指示器与动效（`STAGE11-PLAN.md`）
+ * # ★★★ 阶段 11 / 11b：液态指示器（`STAGE11-PLAN.md`）
  *
- * ## 这一节推翻了 6e 的裁定（**U1 / U2，已登记**）
- * 6e 曾把"底栏不做动画"定为结论，理由①"液态感不是需求项"②"弹性会让底栏尺寸在转场期变化"。
- * 用户 2026-09-24 指定参照两个 Flutter 实现升级底栏 ⇒ 理由①**已被新决定覆盖**。
- * 理由②**本阶段仍然成立**，因此处置方式是：
+ * ## 推翻 6e 的裁定（**U1 / U2，已登记**）
+ * 6e 曾把"底栏不做动画"定为结论。用户 2026-09-24 指定参照液态玻璃实现升级底栏 ⇒
+ * 理由①「液态感不是需求项」**已被新决定覆盖**；理由②「弹性会让底栏尺寸在转场期变化」
+ * **仍然成立**，因此处置方式是：
  *
  * **只让指示器动，不让胶囊动。** 胶囊的尺寸、位置、圆角全部保持常量 ——
- * 这正是 [GlassLayer] 逐像素对齐与 `RenderEffect` 缓存的前提（`§2.6`）。
+ * 这正是 `GlassLayer` 逐像素对齐与 `RenderEffect` 缓存的前提（`§2.6`）。
  * 已评估过的 [NavBarElastic]（整条胶囊拉宽）因此**仍然不参与生产**。
  *
+ * ## 11b 为什么重做（用户实测反馈：「还是不行」）
+ * 阶段 11 的第一版指示器是一枚 **44dp 静态圆**、形变只有 18%，
+ * 按下去**毫无反馈** —— 那不是"液态"，只是一个会滑动的色块。
+ * 参照 [`Kyant0/AndroidLiquidGlass`](https://github.com/Kyant0/AndroidLiquidGlass) 的
+ * `LiquidBottomTabs.kt` + `DampedDragAnimation.kt` 重做后，本版具备：
+ *
+ * | 特性 | 做法 | 落点 |
+ * |---|---|---|
+ * | **形状** | 占满一个 Tab 格的 capsule（宽 = 格宽 − 内缩，高 = 胶囊高 − 内缩） | 本文件 |
+ * | **按下膨胀** | `1 → 1.39`（`78/56`），且 scaleX / scaleY 用**不同**弹簧 | `pressScaleX/Y` |
+ * | **速度拉伸** | `scaleX /= 1−clamp(v·0.75,±0.2)`；`scaleY *= 1−clamp(v·0.25,±0.2)` | [NavBarIndicator] |
+ * | **真实速度** | `VelocityTracker`（不是"位移 ÷ 一帧"的估算） | 本文件 |
+ * | **点击也有挤压** | 点击 → `press()` → 140ms → `release()` | [PRESS_PULSE_MILLIS] |
+ * | **跟手高光** | AGSL 光晕 + `BlendMode.Plus`，uniform 每帧更新 | [navBarGlow] |
+ * | **立体感** | 主体竖向渐变 + 迎光侧描边 | `indicatorSurface` |
+ *
  * ## 指示器的三条设计约束（改动前先读）
- * 1. **它是全栏唯一的**：不再由每个 [NavBarItem] 各带一枚背景圆（那是阶段 8.0 的做法，
- *    选中的表意是"原地淡入"）。现在选中的表意是"它滑过去了"。
+ * 1. **它是全栏唯一的**：不再由每个 [NavBarItem] 各带一枚背景圆（那是阶段 8.0 的做法）。
  * 2. **它的水平位置只有两个来源**：非拖拽时由弹簧 `animate` 驱动；拖拽时由手指位移驱动。
  *    两者都写进同一个 `indicatorX`，不存在第二个真相。
  * 3. **它不得进入 `GlassParams`**：位置是每帧都在变的量，而 `RenderEffect` 的缓存纪律
  *    要求"只在尺寸/参数/档位变化时重建"。把位置塞进参数 = 每帧重建 effect = 规格 §六 明令禁止。
- *
- * ## 为什么用 `animate()` 而不是 `Animatable`
- * `animate(initial, target, spec) { value, velocity -> … }` 的回调**同时给值与速度**，
- * 而速度正是 squash-and-stretch 要用的量。用 `Animatable` 得去读 `snapshotFlow { it.velocity }`，
- * 多一层间接；而在拖拽中直接给 `mutableFloatStateOf` 赋值是**同步**的，
- * 不必为每一帧 `launch { snapTo() }`（那会每秒创建 60 个协程）。
+ *    （高光因此走 [navBarGlow] 这条**独立的绘制路径**，而不是改玻璃的参数。）
  *
  * @param currentTab 当前选中的 Tab（决定指示器滑到哪）
  * @param onSelect 点击回调
@@ -140,7 +157,7 @@ import dev.chrisbanes.haze.materials.HazeMaterials
  * @param blurSupported 是否真正启用模糊（由 `BlurPolicy.effectiveBlur` 决定）
  * @param glassTier 阶段 7 的三档判定结果（决定"模糊交给谁"与底面用哪个 alpha）
  * @param onCapsuleTopMeasured 胶囊顶边在**根坐标**里的 y（px）；玻璃层用它对齐内容
- * @param badges 各 Tab 的角标计数（阶段 11）。**本阶段调用方传空表**，见 `§3.2` 的空能力登记
+ * @param badges 各 Tab 的角标计数（阶段 11）。**调用方传空表**，见 `§3.2` 的空能力登记
  */
 @OptIn(ExperimentalHazeMaterialsApi::class)
 @Composable
@@ -161,29 +178,56 @@ internal fun FloatingNavBar(
 
     val tabs = TabDestinations.ALL
     val selectedIndex = tabs.indexOf(currentTab).coerceAtLeast(0)
+    val density = LocalDensity.current
+    val scope = rememberCoroutineScope()
 
-    // ── 阶段 11：指示器的水平位置（px，相对胶囊左边缘）────────────────────
-    // 唯一真相：弹簧动画与拖拽手势都写它一个。初值 0 由下面的"首次测量"分支纠正。
-    var indicatorX by remember { mutableFloatStateOf(0f) }
-    var indicatorVelocity by remember { mutableFloatStateOf(0f) }
-    // 是否已经按测量到的宽度就位过（首帧不许从 0 滑过去）
-    var positioned by remember { mutableStateOf(false) }
-    var dragging by remember { mutableStateOf(false) }
-
+    // ── 几何 ─────────────────────────────────────────────────────────────
     // 胶囊实测宽度 ⇒ 等宽项宽。0 表示还没测量到（首帧），此时指示器不画。
     var stripWidthPx by remember { mutableFloatStateOf(0f) }
     val itemWidthPx = if (tabs.isEmpty()) 0f else stripWidthPx / tabs.size
+    val insetPx = with(density) { NavBarIndicator.INSET_DP.dp.toPx() }
+    val indicatorWidthPx = (itemWidthPx - insetPx * 2f).coerceAtLeast(0f)
+    val indicatorHeightPx = with(density) { NavBarHeight.toPx() } - insetPx * 2f
+    // 预先换算成 Dp：`.size(width = …, height = …)` 若写成**多行参数**，
+    // ktlint 的链式调用规则不允许后面再接 `.graphicsLayer`（`chain-method-continuation`）
+    val indicatorWidthDp = with(density) { indicatorWidthPx.toDp() }
+    val indicatorHeightDp = with(density) { indicatorHeightPx.toDp() }
 
-    // 图标行的中心 y（根坐标）—— 指示器要垂直对齐到**图标**上，而不是胶囊正中。
-    // 用一个实测值而不是猜一个 dp 常量：文字行高由 `Type.kt` 的字号体系决定（阶段 8.1 改过），
-    // 写死偏移会在下次调字号时静默错位。
-    var iconCenterInRootPx by remember { mutableFloatStateOf(0f) }
-    var capsuleTopInRootPx by remember { mutableFloatStateOf(0f) }
+    // ── 指示器状态 ───────────────────────────────────────────────────────
+    // 唯一真相：弹簧动画与拖拽手势都写它一个。初值 0 由下面的"首次测量"分支纠正。
+    var indicatorX by remember { mutableFloatStateOf(0f) }
+    // 速度（**Tab/秒**，不是 px/秒）：拉伸是相对量，归一化后小屏大屏观感一致
+    var indicatorVelocity by remember { mutableFloatStateOf(0f) }
+    // 是否已经按测量到的宽度就位过（首帧不许从 0 滑过去）
+    var positioned by remember { mutableStateOf(false) }
+    var pressing by remember { mutableStateOf(false) }
+    // 手指在**胶囊局部坐标**里的位置（高光跟手用）
+    var finger by remember { mutableStateOf(Offset.Zero) }
 
-    // ── 弹簧滑动 ─────────────────────────────────────────────────────────
-    // key 里的 `dragging` 让"松手"成为一次重启 ⇒ 苹果从当前拖到的位置滑向目标，天然可中断。
-    LaunchedEffect(selectedIndex, itemWidthPx, dragging) {
-        if (dragging || itemWidthPx <= 0f) return@LaunchedEffect
+    val pressProgress = remember { Animatable(0f) }
+    val pressScaleX = remember { Animatable(1f) }
+    val pressScaleY = remember { Animatable(1f) }
+    val velocityTracker = remember { VelocityTracker() }
+
+    // ── 按下 / 释放（三个量各用各的弹簧，这是"液态"的一半）────────────────
+    // scaleX 0.6/250 与 scaleY 0.7/250 的差异来自参考实现：
+    // 两个轴的收敛速度**故意不同**，形变才会看起来像"被甩开的一坨"而不是"等比放大"。
+    fun press() {
+        scope.launch { pressProgress.animateTo(1f, PRESS_SPEC) }
+        scope.launch { pressScaleX.animateTo(NavBarIndicator.PRESSED_SCALE, SCALE_X_SPEC) }
+        scope.launch { pressScaleY.animateTo(NavBarIndicator.PRESSED_SCALE, SCALE_Y_SPEC) }
+    }
+
+    fun release() {
+        scope.launch { pressProgress.animateTo(0f, PRESS_SPEC) }
+        scope.launch { pressScaleX.animateTo(1f, SCALE_X_SPEC) }
+        scope.launch { pressScaleY.animateTo(1f, SCALE_Y_SPEC) }
+    }
+
+    // ── 位置弹簧 ─────────────────────────────────────────────────────────
+    // key 里的 `pressing` 让"松手"成为一次重启 ⇒ 指示器从当前拖到的位置滑向目标，天然可中断。
+    LaunchedEffect(selectedIndex, itemWidthPx, pressing) {
+        if (pressing || itemWidthPx <= 0f) return@LaunchedEffect
         val target = NavBarIndicator.centerX(selectedIndex, itemWidthPx)
         if (!positioned) {
             // 首次测量（或换屏宽后重新测量）：直接就位，不播一次"从左滑过来"
@@ -201,12 +245,9 @@ internal fun FloatingNavBar(
                 ),
         ) { value, velocity ->
             indicatorX = value
-            indicatorVelocity = velocity
+            indicatorVelocity = NavBarIndicator.velocityTabsPerSecond(velocity, itemWidthPx)
         }
     }
-
-    // squash-and-stretch：弹簧滑行与拖拽都由 `indicatorVelocity` 供速（见各自的写入点）
-    val stretch = NavBarIndicator.normalizedStretch(indicatorVelocity)
 
     Box(
         modifier =
@@ -227,7 +268,6 @@ internal fun FloatingNavBar(
                     //   （两者都是根 Box 的直接子节点）。
                     .onGloballyPositioned { coordinates ->
                         onCapsuleTopMeasured(coordinates.positionInRoot().y.toInt())
-                        capsuleTopInRootPx = coordinates.positionInRoot().y
                         val width = coordinates.size.width.toFloat()
                         // 宽度变化（旋转 / 折叠屏）⇒ 让下一次 LaunchedEffect 重新就位，
                         // 否则指示器会停在按旧宽度算出来的位置
@@ -235,7 +275,15 @@ internal fun FloatingNavBar(
                             stripWidthPx = width
                             positioned = false
                         }
-                    }.clip(RoundedCornerShape(NavBarCornerRadius))
+                    }.shadow(
+                        // ★ 阶段 11b：投影。参考 App 的胶囊是**浮**在内容之上的
+                        //   （它的底栏下方有一圈柔和暗影），而本版此前只有边框高光 ——
+                        //   没有投影的玻璃看起来是"贴"在背景上的一层膜，不是一块厚玻璃。
+                        //   6dp 是"看得见悬浮、又不至于像卡片掉下来"的量级。
+                        elevation = NAV_BAR_SHADOW_ELEVATION,
+                        shape = RoundedCornerShape(NavBarCornerRadius),
+                        clip = false,
+                    ).clip(RoundedCornerShape(NavBarCornerRadius))
                     // ② 底面遮罩：
                     //    · Tier 3（Haze）：仅在不支持模糊时铺纯色（需求 §6 的 0.92f）
                     //    · Tier 1/2：**始终**铺一层薄遮罩（见 GLASS_SCRIM_ALPHA 的 KDoc）
@@ -261,8 +309,6 @@ internal fun FloatingNavBar(
                         } else {
                             Modifier.hazeEffect(state = hazeState, style = HazeMaterials.thin()) {
                                 // ★ 四处显式赋值（F3）：**不依赖任何隐式解析链**。
-                                // Haze 的解析顺序是 本节点 → style → compositionLocalStyle
-                                // （`resolveBackgroundColor` / `resolveTints` / `resolveFallbackTint`，1.6.10 源码）。
                                 backgroundColor = colorScheme.surface
                                 blurRadius = NavBarBlurRadius
                                 noiseFactor = NAV_BAR_NOISE_FACTOR
@@ -273,7 +319,7 @@ internal fun FloatingNavBar(
                     )
                     // ④ 液态玻璃微光边框（三档都用：它是"玻璃还在"的锚点）
                     .liquidGlassBorder(cornerRadius = NavBarCornerRadius, dark = dark)
-                    // ⑤ 拖拽切换（阶段 11）：**手势挂在胶囊上**，不在单个 Tab 上。
+                    // ⑤ 拖拽切换（**手势挂在胶囊上**，不在单个 Tab 上）。
                     //   `clickable` 在 Tab 上负责点击；Compose 的手势分发是"子先父后"，
                     //   点击被 Tab 消费、拖动落到这里，两者不会互相吞掉。
                     //   ★ key 里不放 currentTab：那会让每次切 Tab 都重建 pointerInput，
@@ -281,20 +327,27 @@ internal fun FloatingNavBar(
                     .pointerInput(itemWidthPx, tabs.size) {
                         if (itemWidthPx <= 0f || tabs.isEmpty()) return@pointerInput
                         detectHorizontalDragGestures(
-                            onDragStart = {
-                                dragging = true
-                                indicatorVelocity = 0f
+                            onDragStart = { down ->
+                                pressing = true
+                                finger = down
+                                velocityTracker.resetTracking()
+                                press()
                             },
                             onHorizontalDrag = { change, dragAmount ->
                                 change.consume()
-                                // 速度估算：`detectHorizontalDragGestures` 不给速度，
-                                // 用"本帧位移 / 一帧时长"。swatch 的满量程是 600px/s，
-                                // 这个粗糙估算足够驱动 squash（它只影响形变的量，不影响落点）
-                                indicatorVelocity = dragAmount / DRAG_FRAME_SECONDS
+                                finger = change.position
+                                velocityTracker.addPosition(change.uptimeMillis, change.position)
                                 indicatorX = (indicatorX + dragAmount).coerceIn(0f, stripWidthPx)
+                                // ★ 真实速度来自 VelocityTracker（此前是"位移 ÷ 一帧"的估算）
+                                indicatorVelocity =
+                                    NavBarIndicator.velocityTabsPerSecond(
+                                        pixelsPerSecond = velocityTracker.calculateVelocity().x,
+                                        itemWidth = itemWidthPx,
+                                    )
                             },
                             onDragEnd = {
-                                dragging = false
+                                pressing = false
+                                release()
                                 val index =
                                     NavBarIndicator.nearestIndex(
                                         x = indicatorX,
@@ -306,26 +359,38 @@ internal fun FloatingNavBar(
                                 // —— 而比较会迫使 pointerInput 把 currentTab 当 key（见上）。
                                 onSelect(tabs[index])
                             },
-                            onDragCancel = { dragging = false },
+                            onDragCancel = {
+                                pressing = false
+                                release()
+                            },
                         )
-                    },
+                    }
+                    // ⑥ 交互高光：**画在最后 ⇒ 在最上层**（理由见 [navBarGlow] 的 KDoc）
+                    .navBarGlow(
+                        progress = { pressProgress.value },
+                        position = { finger },
+                    ),
         ) {
-            // 指示器：画在 Tab 内容**之下**（它是背景，不该盖住图标）
-            if (itemWidthPx > 0f) {
+            // 液态指示器：画在 Tab 内容**之下**（它是背景，不该盖住图标）
+            if (indicatorWidthPx > 0f && indicatorHeightPx > 0f) {
                 Box(
                     modifier =
                         Modifier
-                            .align(Alignment.TopStart)
-                            .size(SELECTED_BADGE_SIZE)
+                            .align(Alignment.CenterStart)
+                            .size(width = indicatorWidthDp, height = indicatorHeightDp)
                             .graphicsLayer {
-                                // 水平：把"中心 x"换算成左上角；垂直：对齐到图标行中心
+                                // 中心对齐：`indicatorX` 是中心 x，Box 的基准是左上角
                                 translationX = indicatorX - size.width / 2f
-                                translationY = iconCenterInRootPx - capsuleTopInRootPx - size.height / 2f
-                                // squash-and-stretch（阶段 11）：沿运动方向拉伸、垂直压缩
-                                scaleX = NavBarIndicator.widthScale(stretch)
-                                scaleY = NavBarIndicator.heightScale(stretch)
+                                // 按下膨胀（1 → 1.39）叠加速度拉伸（两个轴**反向**）
+                                scaleX =
+                                    pressScaleX.value *
+                                    NavBarIndicator.stretchScaleX(indicatorVelocity)
+                                scaleY =
+                                    pressScaleY.value *
+                                    NavBarIndicator.stretchScaleY(indicatorVelocity)
                             }.clip(CircleShape)
-                            .background(colorScheme.secondaryContainer.copy(alpha = SELECTED_BADGE_ALPHA)),
+                            .background(colorScheme.secondaryContainer.copy(alpha = SELECTED_BADGE_ALPHA))
+                            .indicatorSurface(),
                 )
             }
 
@@ -339,8 +404,16 @@ internal fun FloatingNavBar(
                         tab = tab,
                         selected = tab == currentTab,
                         badgeCount = badges[tab],
-                        onIconMeasured = { centerYInRoot ->
-                            if (centerYInRoot != iconCenterInRootPx) iconCenterInRootPx = centerYInRoot
+                        onPulse = {
+                            // 点击也走一次"按下 → 释放"：否则点 Tab 时指示器只是滑过去，
+                            // 没有"被捏了一下"的反馈（参考实现的 animateToValue 同样先 press）
+                            if (!pressing) {
+                                press()
+                                scope.launch {
+                                    delay(PRESS_PULSE_MILLIS)
+                                    release()
+                                }
+                            }
                         },
                         onClick = { onSelect(tab) },
                         modifier = Modifier.weight(1f),
@@ -351,30 +424,35 @@ internal fun FloatingNavBar(
     }
 }
 
-/** 单帧时长（秒）：用于把拖拽位移换算成速度。60Hz 的标称值。 */
-private const val DRAG_FRAME_SECONDS = 1f / 60f
+/** 按下 / 释放的弹簧（临界阻尼、很硬）：参考实现的 `spring(1f, 1000f, 0.001f)`。 */
+private val PRESS_SPEC = spring<Float>(dampingRatio = 1f, stiffness = 1000f)
+
+/** 横向缩放弹簧：**故意**比纵向软（0.6 vs 0.7），两个轴的收敛不同步 ⇒ 液体感。 */
+private val SCALE_X_SPEC = spring<Float>(dampingRatio = 0.6f, stiffness = 250f)
+
+/** 纵向缩放弹簧（见 [SCALE_X_SPEC]）。 */
+private val SCALE_Y_SPEC = spring<Float>(dampingRatio = 0.7f, stiffness = 250f)
+
+/** 点击时那次"挤压"的持续时间（ms）。短到不耽误连点，长到看得见。 */
+private const val PRESS_PULSE_MILLIS = 140L
 
 /**
  * 单个 Tab：图标 + 文字 + （可选）角标。
  *
- * ## 阶段 11：它不再自带选中背景
+ * ## 它不自带选中背景
  * 阶段 8.0 起，选中态是**这一项自己**的 44dp 圆在 `alpha 0 → 0.55` 之间淡入。
- * 那个圆现在被上提到底栏层成为**可滑动的指示器**（见 [FloatingNavBar] 的 KDoc），
+ * 那个圆现在被上提为底栏层的**液态指示器**（见 [FloatingNavBar] 的 KDoc），
  * 因此这里只剩"图标 + 文字"，选中只改变**颜色**。
  *
- * 图标的位置要**回填给底栏**（[onIconMeasured]）：指示器必须垂直对齐到图标行，
- * 而"图标行中心相对胶囊顶边偏移多少"取决于文字行高 —— 那由 `Type.kt` 的字号体系决定。
- * 用一个实测值代替猜一个 dp 常量，下次调字号时就不会静默错位。
- *
  * @param badgeCount 角标计数（`null` / `<= 0` 不显示，见 [NavBarBadge.text]）
- * @param onIconMeasured 图标中心在**根坐标**里的 y（px），由底栏用于对齐指示器
+ * @param onPulse 点击时的"挤压"回调（由底栏触发一次 press → release）
  */
 @Composable
 private fun NavBarItem(
     tab: TabDestination,
     selected: Boolean,
     badgeCount: Int?,
-    onIconMeasured: (Float) -> Unit,
+    onPulse: () -> Unit,
     onClick: () -> Unit,
     modifier: Modifier = Modifier,
 ) {
@@ -394,18 +472,16 @@ private fun NavBarItem(
                 .clickable(
                     interactionSource = interactionSource,
                     indication = null,
-                    onClick = onClick,
+                    onClick = {
+                        onPulse()
+                        onClick()
+                    },
                 ),
         horizontalAlignment = Alignment.CenterHorizontally,
         verticalArrangement = Arrangement.Center,
     ) {
         Box(
-            modifier =
-                Modifier
-                    .size(SELECTED_BADGE_SIZE)
-                    .onGloballyPositioned { coordinates ->
-                        onIconMeasured(coordinates.positionInRoot().y + coordinates.size.height / 2f)
-                    },
+            modifier = Modifier.size(ICON_FRAME_SIZE),
             contentAlignment = Alignment.Center,
         ) {
             Icon(
@@ -432,12 +508,7 @@ private fun NavBarItem(
  *
  * ## 为什么用 `error` 色而不是主题强调色
  * 角标的语义是"这里多了点东西，去看一眼"。在底栏三格里，只有**警示类**颜色能在一眼之内
- * 从玻璃背景上跳出来；用 `primary` 会与选中态（`onSecondaryContainer` 的图标色）混淆，
- * 让人以为"这一格被选中了"。
- *
- * ## 尺寸与文本
- * 显示文本由 [NavBarBadge.text] 决定（含 `99+` 截断）；本组件只负责画。
- * `minSize` 让一位数也是圆形而不是竖条；两位以上靠 `padding` 自然撑成胶囊。
+ * 从玻璃背景上跳出来；用 `primary` 会与选中态混淆，让人以为"这一格被选中了"。
  */
 @Composable
 private fun BoxScope.Badge(text: String) {
@@ -461,26 +532,88 @@ private fun BoxScope.Badge(text: String) {
 }
 
 /**
- * 选中项那枚圆形软背景的尺寸（参考图里它比图标大一圈，但不占满 Tab 宽度）。
+ * 图标容器的固定尺寸（44dp）。
  *
- * 44.dp 落在 LSPosed 观感的 40–48 区间中段；若取 40，图标（22dp）四周只剩 9dp
- * 呼吸位，看起来会像"图标被框住"；取 48 则会在 3 个 Tab 的底栏里显得挤。
+ * 用固定容器而不是让图标自己撑开：图标与文字的相对位置因此**与图标无关**，
+ * 换一套图标不会让文字上下跳。
  *
- * 阶段 11 起它同时是**指示器**的尺寸与**图标容器**的尺寸 —— 两者必须相等，
- * 否则滑动中的圆会比图标底下那个圈大一圈或小一圈（那看起来像"没对齐"而不是"在滑动"）。
+ * 它与指示器的高度（`NavBarHeight − 2 × INSET_DP` = 64 − 20 = 44dp）**数值相同但是巧合** ——
+ * 前者是"图标占位"，后者是"水滴的高度"。改其中一个不该被另一个牵动，
+ * 因此这里是两个独立的概念，只在视觉上恰好一致。
  */
-private val SELECTED_BADGE_SIZE = 44.dp
+private val ICON_FRAME_SIZE = 44.dp
 
 /**
- * 圆形软背景的 alpha。
+ * 指示器选中态的填充 alpha。
  *
  * 用**半透明**而不是实心 `secondaryContainer`：底栏本身是玻璃/毛玻璃，
- * 实心色块会在渐变描边下显得像"贴上去的贴纸"（参考图的选中态也是半透明浅灰圆）。
+ * 实心色块会在渐变描边下显得像"贴上去的贴纸"。
  */
 private const val SELECTED_BADGE_ALPHA = 0.55f
 
 /** 角标相对图标框右上角的内缩（dp）。 */
 private val BADGE_INSET = 6.dp
+
+/**
+ * 胶囊的投影高度（dp）。
+ *
+ * 6dp 的来历：对着参考 App 的截图目测 —— 它的底栏下方有一圈**柔和但不浓重**的暗影，
+ * 量级与"一张浮在桌面上的卡片"相当。取 2–4 会在浅色背景上看不出悬浮；
+ * 取 12 以上会让底栏像被人从页面里"抠"出来一块，与玻璃材质冲突。
+ *
+ * ## 为什么三档降级都保留投影
+ * 投影表达的是"**这块东西浮在内容之上**"，与"里面是折射还是模糊"无关 ——
+ * 恰恰相反，越是没有折射的低端档，越需要投影来维持"它是一块独立的玻璃"这个读法。
+ */
+private val NAV_BAR_SHADOW_ELEVATION = 6.dp
+
+/**
+ * 指示器表面的**立体感**（阶段 11b）。
+ *
+ * ## 为什么需要它
+ * 阶段 11 的第一版指示器是一个**纯色圆** —— 没有高光、没有暗部，
+ * 看起来就是一块贴纸。真正的"水滴"必须有厚度：迎光侧亮、背光侧暗。
+ *
+ * ## 两层怎么叠
+ * 1. **主体**：竖向渐变（顶部提亮 → 中部透明 → 底部压暗）。
+ *    竖向而不是斜向，是因为参照的水滴本体是"液面" —— 液面在重力下有水平的明暗分界。
+ * 2. **边缘描边**：斜向渐变（左上亮 → 右下暗），与 `liquidGlassBorder` 同一个光源方向
+ *    （[NavBarLight.DEFAULT_ANGLE_DEGREES]）。两处**必须同源**，否则高光会打架。
+ *
+ * 用 `drawWithCache` 而不是 `drawBehind`：`Brush` 与 `Stroke` 只在尺寸变化时重建一次，
+ * 而指示器的尺寸在按下/拉伸时**每帧都在变** —— 这正好是缓存的对象生命周期该管的事。
+ */
+private fun Modifier.indicatorSurface(): Modifier =
+    this.drawWithCache {
+        val radius = CornerRadius(size.height / 2f)
+        val body =
+            Brush.verticalGradient(
+                colors =
+                    listOf(
+                        Color.White.copy(alpha = 0.16f),
+                        Color.Transparent,
+                        Color.Black.copy(alpha = 0.06f),
+                    ),
+            )
+        val axis =
+            NavBarLight.axis(
+                width = size.width,
+                height = size.height,
+                direction = NavBarLight.unitVector(NavBarLight.DEFAULT_ANGLE_DEGREES),
+            )
+        val rim =
+            Brush.linearGradient(
+                colors = listOf(Color.White.copy(alpha = 0.55f), Color.White.copy(alpha = 0.10f)),
+                start = axis.end,
+                end = axis.start,
+            )
+        val stroke = Stroke(width = 1.dp.toPx())
+        onDrawWithContent {
+            drawContent()
+            drawRoundRect(brush = body, cornerRadius = radius, size = size)
+            drawRoundRect(brush = rim, cornerRadius = radius, size = size, style = stroke)
+        }
+    }
 
 /**
  * 液态玻璃微光边框（需求 §6；阶段 11 起**跟随光源角**）。
@@ -493,26 +626,15 @@ private val BADGE_INSET = 6.dp
  * ## ★ 阶段 11 改了什么（`STAGE11-PLAN.md §1.4`，推翻 `STAGE7-PLAN §8` 第 11 条）
  * 阶段 7 这版写的是 `start = Offset.Zero, end = Offset(w, h)`。
  * 那在**正方形**上恰好是 45°，但在底栏这种**宽扁**形状（约 1000×160）上，
- * 它几乎是一条**水平**渐变 —— 也就是说"斜向高光"其实是个巧合，
- * 只在 w ≈ h 时成立。
+ * 它几乎是一条**水平**渐变 —— 也就是说"斜向高光"其实是个巧合，只在 w ≈ h 时成立。
  *
  * 现在渐变轴由 [NavBarLight.axis] 按**光源方向**算出来：过中心、沿光向、两端刚好把
- * 矩形投影覆盖住。于是：
- * - 斜向是**算出来的**，与形状无关
- * - 光源角与 AGSL 的 Fresnel 项**同源**（都取自 `NavBarLight`）——
- *   镜面亮在左上、边框却亮在右下这种事从结构上就不会发生
- * - 默认光角（左上）下，颜色顺序仍是"迎光端最亮、中间最暗、背光端次亮"，
- *   因此深浅两套 alpha 的语义没有变，变的只是**轴**
+ * 矩形投影覆盖住。于是斜向是**算出来的**，且与 AGSL 的 Fresnel、指示器的描边
+ * **同源**（都取自 [NavBarLight]）—— 三处高光打架从结构上就不会发生。
  *
  * ## 为什么深色下要**提高**白色透明度
  * 深色主题的表面本来就暗，白色高光在暗底上对比度更低；若沿用浅色的数值，
  * 边框会几乎看不见。因此深色用更高的 alpha（0.24/0.14）而不是更低。
- *
- * ## 与 `Modifier.border` 的区别
- * `Modifier.border` 只接受单色或 `Brush` 且无法缓存几何计算。
- * 这里用 `drawWithCache` 同时缓存了 `Brush` 与 `Stroke`，并把描边画在
- * **内容之上**（`drawContent()` 之后）——这正是"微光"必须的层序：
- * 高光在玻璃表面之上，而不是被内容盖住。
  */
 private fun Modifier.liquidGlassBorder(
     cornerRadius: Dp,

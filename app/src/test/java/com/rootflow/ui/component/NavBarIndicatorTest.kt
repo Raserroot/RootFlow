@@ -58,49 +58,84 @@ class NavBarIndicatorTest {
     }
 
     @Test
-    @DisplayName("速度 → 拉伸量：满量程 1、越界 clamp、方向无关")
-    fun `normalized stretch is direction agnostic and clamped`() {
-        assertEquals(0f, NavBarIndicator.normalizedStretch(0f), eps)
-        assertEquals(0.5f, NavBarIndicator.normalizedStretch(300f), eps)
-        assertEquals(1f, NavBarIndicator.normalizedStretch(600f), eps)
-        assertEquals(1f, NavBarIndicator.normalizedStretch(99999f), eps, "超过满量程不再放大")
-        assertEquals(1f, NavBarIndicator.normalizedStretch(-600f), eps, "向左甩同样被拉长")
+    @DisplayName("★ 按下膨胀倍率 = 78/56 ≈ 1.39（参考实现的口径：大到看得出，小到不盖住隔壁）")
+    fun `pressed scale matches the reference implementation`() {
+        assertEquals(78f / 56f, NavBarIndicator.PRESSED_SCALE, eps)
+        assertTrue(NavBarIndicator.PRESSED_SCALE > 1.3f, "太小就根本看不出「液态」——这正是 11b 重做的原因")
+        assertTrue(NavBarIndicator.PRESSED_SCALE < 1.5f, "太大就会在 3 格底栏里盖住相邻 Tab")
     }
 
     @Test
-    @DisplayName("★ 速度 → 拉伸量：NaN / Infinity 必须归零（否则会一路进 scaleX 让指示器消失）")
-    fun `normalized stretch neutralizes non finite velocity`() {
-        assertEquals(0f, NavBarIndicator.normalizedStretch(Float.NaN), eps)
-        assertEquals(0f, NavBarIndicator.normalizedStretch(Float.POSITIVE_INFINITY), eps)
-        assertEquals(0f, NavBarIndicator.normalizedStretch(Float.NEGATIVE_INFINITY), eps)
+    @DisplayName("像素速度 → Tab/秒（归一化，小屏大屏观感一致）")
+    fun `velocity is normalized to tabs per second`() {
+        // 一格宽 360px、速度 720px/s ⇒ 每秒跨 2 格
+        assertEquals(2f, NavBarIndicator.velocityTabsPerSecond(720f, 360f), eps)
+        assertEquals(0f, NavBarIndicator.velocityTabsPerSecond(720f, 0f), eps, "退化宽度不得除零")
+        assertEquals(0f, NavBarIndicator.velocityTabsPerSecond(Float.NaN, 360f), eps)
+        assertEquals(0f, NavBarIndicator.velocityTabsPerSecond(Float.POSITIVE_INFINITY, 360f), eps)
     }
 
     @Test
-    @DisplayName("形变倍率：静止恒等；满量程时宽度拉伸、高度反向压缩")
-    fun `scale factors stretch width and squash height`() {
-        assertEquals(1f, NavBarIndicator.widthScale(0f), eps)
-        assertEquals(1f, NavBarIndicator.heightScale(0f), eps, "静止必须是恒等变换，否则指示器尺寸会漂移")
+    @DisplayName("★ 拉伸：静止恒等；甩动时横向放大、纵向压缩（两个轴**反向**才是「被甩出去」）")
+    fun `stretch scales the two axes in opposite directions`() {
+        assertEquals(1f, NavBarIndicator.stretchScaleX(0f), eps)
+        assertEquals(1f, NavBarIndicator.stretchScaleY(0f), eps, "静止必须是恒等变换，否则指示器尺寸会漂移")
 
-        assertEquals(1f + NavBarIndicator.MAX_STRETCH, NavBarIndicator.widthScale(1f), eps)
+        val fast = 5f
+        assertTrue(NavBarIndicator.stretchScaleX(fast) > 1f, "向右甩：横向被拉长")
+        assertTrue(NavBarIndicator.stretchScaleY(fast) < 1f, "向右甩：纵向被压扁（否则看起来只是整体变大）")
+
+        // ★ 形变是**有方向**的（与参考实现 `scaleX /= 1 − clamp(v·0.75, ±0.2)` 一致）：
+        //   向左甩是"横向压缩 + 纵向拉高"，与向右甩恰好相反。
+        //   这里刻意钉住它 —— 若有人把它改成"只认大小"，本断言会失败，
+        //   而那个改动的后果是**与参考实现的观感分叉**（不是修 bug）。
+        assertTrue(NavBarIndicator.stretchScaleX(-fast) < 1f, "向左甩：横向压缩")
+        assertTrue(NavBarIndicator.stretchScaleY(-fast) > 1f, "向左甩：纵向拉高")
         assertEquals(
-            1f - NavBarIndicator.MAX_STRETCH * NavBarIndicator.SQUASH_RATIO,
-            NavBarIndicator.heightScale(1f),
+            1f / (1f + NavBarIndicator.STRETCH_CLAMP),
+            NavBarIndicator.stretchScaleX(-fast),
             eps,
-        )
-
-        assertTrue(
-            NavBarIndicator.heightScale(1f) < 1f,
-            "压缩方向必须是减小的（负号写反会让形变看起来像整体放大）",
+            "向左甩的横向倍率 = 1 / (1 + 0.2) = 0.8333；它与向右甩的 1.25 **不是**倒数关系" +
+                "（1/(1−c) · 1/(1+c) = 1/(1−c²)）",
         )
     }
 
     @Test
-    @DisplayName("形变倍率：越界与 NaN 的拉伸量都收敛到恒等")
-    fun `scale factors sanitize their input`() {
-        assertEquals(NavBarIndicator.widthScale(1f), NavBarIndicator.widthScale(9f), eps)
-        assertEquals(NavBarIndicator.widthScale(0f), NavBarIndicator.widthScale(-9f), eps)
-        assertEquals(NavBarIndicator.widthScale(0f), NavBarIndicator.widthScale(Float.NaN), eps)
-        assertEquals(NavBarIndicator.heightScale(0f), NavBarIndicator.heightScale(Float.NaN), eps)
+    @DisplayName("★ 拉伸量被 clamp 在 ±0.2（否则一次甩动会把指示器拉成一根面条）")
+    fun `stretch is clamped`() {
+        val absurd = 99999f
+        assertEquals(NavBarIndicator.stretchScaleX(10f), NavBarIndicator.stretchScaleX(absurd), eps)
+        assertEquals(NavBarIndicator.stretchScaleY(10f), NavBarIndicator.stretchScaleY(absurd), eps)
+
+        // clamp 生效时两个轴的可算边界值
+        assertEquals(
+            1f / (1f - NavBarIndicator.STRETCH_CLAMP),
+            NavBarIndicator.stretchScaleX(10f),
+            eps,
+            "横向：1 / (1 − 0.2) = 1.25",
+        )
+        assertEquals(
+            1f - NavBarIndicator.STRETCH_CLAMP,
+            NavBarIndicator.stretchScaleY(10f),
+            eps,
+            "纵向：1 − 0.2 = 0.8",
+        )
+    }
+
+    @Test
+    @DisplayName("★ 拉伸：NaN / Infinity 归零到恒等（否则会一路进 scaleX 让指示器消失）")
+    fun `stretch neutralizes non finite velocity`() {
+        assertEquals(1f, NavBarIndicator.stretchScaleX(Float.NaN), eps)
+        assertEquals(1f, NavBarIndicator.stretchScaleY(Float.NaN), eps)
+        assertEquals(1f, NavBarIndicator.stretchScaleX(Float.POSITIVE_INFINITY), eps)
+        assertEquals(1f, NavBarIndicator.stretchScaleY(Float.NEGATIVE_INFINITY), eps)
+    }
+
+    @Test
+    @DisplayName("速度大小：符号被抹掉、NaN 归零（供「要不要开色散」这类判定用）")
+    fun `speed of discards sign`() {
+        assertEquals(2f, NavBarIndicator.speedOf(-2f), eps)
+        assertEquals(0f, NavBarIndicator.speedOf(Float.NaN), eps)
     }
 }
 
